@@ -22,9 +22,11 @@ Real nginx behaviour (Lua runtime, SELinux, systemd) is only observable on a tar
 ## Architecture
 
 - Call chain: `install-<platform>.sh` → `update-<platform>.sh` → `sync_waf` in `scripts/lib/common.sh`.
-  - `install-*` only generates a secret and exports it as `WAF_SECRET`, so re-running it is an update.
-  - `update-ubuntu.sh` is a platform check plus `sync_waf`, because apt keeps nginx and `libnginx-mod-http-lua` on the same ABI.
-  - `update-rpm.sh` first runs `ensure_modules`: an `nginx -t` failing with `version N instead of M` triggers `rebuild_modules`, which recompiles the source-built ndk/lua modules from `$BUILD_DIR` for the installed nginx version.
+    - `install-*` only generates a secret and exports it as `WAF_SECRET`, so re-running it is an update.
+    - `update-ubuntu.sh` is a platform check plus `sync_waf`, because apt keeps nginx and `libnginx-mod-http-lua` on the same ABI.
+    - `update-rpm.sh` first runs `ensure_modules`: an `nginx -t` failing with `version N instead of M` triggers `rebuild_modules`, which recompiles the source-built ndk/lua modules from `$BUILD_DIR` for the installed nginx version, then restarts nginx, because a reload keeps the old binary.
+    - `update-rpm.sh` ends with `install_dnf_hook`, a dnf4 `post-transaction-actions` file that reruns it with an explicit `BUILD_DIR` after any `nginx*` package upgrade; it lives in the update rather than the install so `deploy.sh` reaches servers that are already installed.
+      Because the hook runs as root, `writable_by_root_only` refuses it (and deletes an old one) unless the repo copy and `BUILD_DIR`, with every parent, belong to `HOOK_UID` (root; tests pass their own uid) and are not group- or world-writable.
 - `common.sh` is sourced, and sourcing it runs the root and nginx preflight.
 - `sync_waf` stages the files listed in `FILES`, compares them with the installed copies, and only on a change backs up, installs, runs `nginx_test`, then reloads or rolls every file back.
   A new installed file joins that cycle by being added to `FILES` and staged at the same relative path under `$stage`.
@@ -35,9 +37,13 @@ Real nginx behaviour (Lua runtime, SELinux, systemd) is only observable on a tar
 - Run `nginx -t` through `nginx_test`.
   A bare `nginx -t` while nginx is stopped leaves an empty `/run/nginx.pid`, which on SELinux hosts blocks the next `systemctl start` with `Permission denied` and a 90 s timeout.
 - Upstream reads `localized_global.*` set by `init_by_lua_file`, and each `WAF_*` table in `config/waf-local-overrides.lua` replaces the upstream default table wholesale.
-  Upstream matches URI rules against the raw path and query rules against each value re-escaped by `ngx.escape_uri`, so query patterns spell `:` and `/` as `%%3A` and `%%2F`; `tests/test-rules.lua` mirrors that matching.
-  The POST table stays empty because upstream's `WAF_Post_Requests` matches value patterns against the argument name.
-  `waf_defaults` spots upstream default changes between the `localized.WAF_POST_Request_table = {` and `localized.query_string_sort_table = {` line markers.
+  Upstream compiles every rule into a PCRE regex for `ngx.re.find`, and its only Lua-pattern translation is `%.` to `.`, so rules use regex escapes (`\.`), never Lua ones (`%-`, `%/`).
+  URI rules match the raw path unanchored and case-insensitively, query rules match each decoded value as `^(?i)<pattern>$` (hence the `(?s).*` ... `.*` wrapping), and header rules match raw values unanchored and case-sensitively (hence `(?i)`).
+  `tests/test-rules.lua` mirrors that compilation and runs the regexes through Perl, because stock Lua has no PCRE; every rule must block at least one case.
+  The POST table stays empty because any rule there makes upstream read every POST body, uploads included, into a Lua string.
+- `URL` in `common.sh` pins upstream to one commit, because `nginx -t` never compiles `waf.lua` (`access_by_lua_file` loads on the first request).
+  Bumping it means mirroring upstream's `precompile_waf_*_table` changes in `tests/test-rules.lua` first.
+- `sync_waf` checks `nginx -T`, not just `nginx -t`: a config without the `conf.d` include passes `-t` while upstream runs on its public default secret, so a missing `init_by_lua_file` line rolls the update back.
 - Secret precedence: the secret already installed on the server, then `WAF_SECRET`, otherwise the update refuses.
   The repo file keeps the `CHANGE_ME_TO_LONG_RANDOM_SECRET` placeholder.
 - `config/nginx-waf.conf` carries WAF directives only.
