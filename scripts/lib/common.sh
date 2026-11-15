@@ -6,7 +6,9 @@
 CONFIG_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../config" && pwd)"
 ROOT="${ROOT:-}"
 NGINX_BIN="${NGINX_BIN:-nginx}"
-URL="${URL:-https://github.com/C0nw0nk/Nginx-Lua-Anti-DDoS/raw/refs/heads/master/lua/anti_ddos_challenge.lua}"
+# Pinned to a reviewed commit: upstream changes several times a week, and nginx -t never compiles waf.lua, so a breaking change would go live unseen.
+# To move on, read upstream's precompile_waf_*_table changes, mirror them in tests/test-rules.lua, and bump the commit once that test passes.
+URL="${URL:-https://github.com/C0nw0nk/Nginx-Lua-Anti-DDoS/raw/4abbda5a9e76a991d01d4e281b4cc5ac27f01446/lua/anti_ddos_challenge.lua}"
 PID_FILE="$ROOT/run/nginx.pid"
 BACKUP_DIR="$ROOT/var/backups/nginx-waf/$(date +%Y%m%d%H%M%S)"
 PLACEHOLDER_SECRET="CHANGE_ME_TO_LONG_RANDOM_SECRET"
@@ -34,22 +36,29 @@ copy() {
 # `nginx -t` creates an empty pid file when nginx is stopped.
 # Created from a root shell it lacks the httpd_var_run_t label, so on SELinux hosts the systemd-run nginx (httpd_t) gets "open() /run/nginx.pid failed (13: Permission denied)" and the start times out.
 # Removing the empty file lets nginx create a correctly labeled one on start.
+# Pass -T to also print the loaded config.
 nginx_test() {
 	local rc=0
-	"$NGINX_BIN" -t || rc=$?
+	"$NGINX_BIN" "${1:--t}" || rc=$?
 	[ -s "$PID_FILE" ] || rm -f -- "$PID_FILE"
 	return "$rc"
 }
 
-# ponytail: section located by two upstream line markers; if upstream renames them, the drift warning goes silent.
-waf_defaults() {
-	sed -n '/^localized\.WAF_POST_Request_table = {/,/^localized\.query_string_sort_table = {/p' "$1"
+restore_files() {
+	local f
+	for f in "${FILES[@]}"; do
+		if [ -f "$BACKUP_DIR/$f" ]; then
+			copy "$BACKUP_DIR/$f" "$ROOT/$f"
+		else
+			rm -f -- "$ROOT/$f"
+		fi
+	done
 }
 
 # Download upstream waf.lua, reapply config/, and reload nginx only when a file changed.
 # A failed nginx -t puts every file back.
 sync_waf() {
-	local stage secret f changed=0
+	local stage secret f conf changed=0
 
 	WORK_DIR="$(mktemp -d)"
 	trap 'rm -rf -- "$WORK_DIR"' EXIT
@@ -77,11 +86,6 @@ sync_waf() {
 	# Workers load waf.lua as the unprivileged nginx user on their first request.
 	chmod 0644 "$stage/$WAF_FILE" "$stage/$HTTP_CONF"
 
-	# Local WAF_* tables replace the upstream defaults instead of extending them, so an upstream change there needs a manual review.
-	if [ -f "$ROOT/$WAF_FILE" ] && [ "$(waf_defaults "$ROOT/$WAF_FILE")" != "$(waf_defaults "$stage/$WAF_FILE")" ]; then
-		log "WARN: upstream changed its default WAF_* rules; review config/waf-local-overrides.lua, which replaces them"
-	fi
-
 	for f in "${FILES[@]}"; do
 		cmp -s "$stage/$f" "$ROOT/$f" || changed=1
 	done
@@ -104,15 +108,17 @@ sync_waf() {
 	done
 
 	log "Testing nginx config"
-	if ! nginx_test; then
-		for f in "${FILES[@]}"; do
-			if [ -f "$BACKUP_DIR/$f" ]; then
-				copy "$BACKUP_DIR/$f" "$ROOT/$f"
-			else
-				rm -f -- "$ROOT/$f"
-			fi
-		done
+	if ! conf="$(nginx_test -T)"; then
+		restore_files
 		die "nginx -t failed; restored previous files from $BACKUP_DIR"
+	fi
+	# Without waf.conf nginx -t still passes, but upstream then runs on its public default secret and lacks the antiddos shared dict it stores state in.
+	if ! grep -qxF "init_by_lua_file /$OVERRIDES_FILE;" <<<"$conf"; then
+		restore_files
+		die "nginx does not load /$HTTP_CONF; add 'include /etc/nginx/conf.d/*.conf;' inside the http block of nginx.conf"
+	fi
+	if ! grep -qE '^[[:space:]]*access_by_lua_file[[:space:]]' <<<"$conf"; then
+		log "WARN: no site runs the WAF yet; add 'access_by_lua_file /$WAF_FILE;' to its server or location block"
 	fi
 
 	log "Reloading nginx"

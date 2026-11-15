@@ -9,4 +9,3 @@ WAF_SECRET="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')"
 export WAF_SECRET
 
 "$(dirname "${BASH_SOURCE[0]}")/update-ubuntu.sh"
-printf '%s\n' "Protect a site with 'access_by_lua_file /etc/nginx/lua/waf.lua;' in its server or location block (see docs/app-rules-wordpress-slims-dspace.md)." >&2
