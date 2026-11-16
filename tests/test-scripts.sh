@@ -37,6 +37,9 @@ if [ -e "$ROOT/etc/nginx/conf.d/waf.conf" ] && { [ -z "$NGINX_NO_CONFD" ] || gre
 if [ -n "$waf" ] && ! grep -q 'ngx_http_lua_module.so;' "$c" 2>/dev/null; then
 	echo 'nginx: [emerg] unknown directive "lua_shared_dict" in /etc/nginx/conf.d/waf.conf:1' >&2; exit 1
 fi
+if [ -n "$waf" ] && grep -qE '^[[:space:]]*lua_shared_dict antiddos ' "$c" 2>/dev/null; then
+	echo "nginx: [emerg] lua_shared_dict \"antiddos\" is already defined as \"antiddos\" in $c" >&2; exit 1
+fi
 [ "$1" = -T ] || exit 0
 echo "# configuration file $c:"; cat "$c" 2>/dev/null
 if [ -n "$waf" ]; then
@@ -62,6 +65,16 @@ mkdir -p "$dir"
 EOF
 # rpm and dpkg-query report every package as installed, so the test never reaches the real dnf or apt; restorecon must not relabel scratch files.
 printf '#!/bin/sh\n' | tee "$T/bin/rpm" "$T/bin/restorecon" >/dev/null
+# SE_MODE and SE_EXECMEM stand for the host's SELinux mode and httpd_execmem boolean, so the host running the tests does not leak in.
+tee "$T/bin/getenforce" >/dev/null <<'EOF'
+#!/bin/sh
+echo "${SE_MODE:-Disabled}"
+EOF
+tee "$T/bin/getsebool" >/dev/null <<'EOF'
+#!/bin/sh
+echo "httpd_execmem --> ${SE_EXECMEM:-on}"
+EOF
+chmod +x "$T/bin/getenforce" "$T/bin/getsebool"
 chmod +x "$T"/bin/*
 
 # A first build finds the nginx source already unpacked, so it never downloads it.
@@ -154,6 +167,15 @@ load_module $R/modules/ngx_http_lua_module.so;"
 	NGINX_NO_CONFD=1 run "update-$platform.sh" || fail "rerun with the waf.conf include exited non-zero: $(cat "$T/out.log")"
 	[ "$(grep -c 'include /etc/nginx/conf.d/waf.conf;' "$R/etc/nginx/nginx.conf")" -eq 1 ] || fail "waf.conf include added twice"
 
+	# A manual setup with waf.conf's directives indented inline in nginx.conf, and waf.conf itself unloaded, gets them swapped for the include.
+	printf '%s\nevents {}\nhttp {\n    lua_package_path "/usr/local/lib/lua/?.lua;;";\n    lua_shared_dict antiddos 70m;\n    lua_shared_dict jspuzzle_tracker 70m;\n    init_by_lua_file /etc/nginx/lua/waf-local-overrides.lua;\n    server {\n        access_by_lua_file /etc/nginx/lua/waf.lua;\n        listen 80;\n    }\n}\n' "$lm" >"$R/etc/nginx/nginx.conf"
+	echo '-- upstream v4b' >>"$T/upstream.lua"
+	NGINX_NO_CONFD=1 run "update-$platform.sh" || fail "update over inline WAF directives exited non-zero: $(cat "$T/out.log")"
+	[ "$(grep -c 'include /etc/nginx/conf.d/waf.conf;' "$R/etc/nginx/nginx.conf")" -eq 1 ] || fail "waf.conf include not added over inline WAF directives: $(cat "$R/etc/nginx/nginx.conf")"
+	! grep -qE 'lua_shared_dict|init_by_lua_file|access_by_lua_file' "$R/etc/nginx/nginx.conf" || fail "inline WAF directives left in nginx.conf: $(cat "$R/etc/nginx/nginx.conf")"
+	grep -qF 'listen 80;' "$R/etc/nginx/nginx.conf" || fail "server block lost with the inline WAF directives"
+	[ "$(reloads)" -eq 5 ] || fail "update over inline WAF directives did not reload nginx"
+
 	# Without an http block the include has nowhere to go, so the update is rolled back and nginx.conf stays as it was.
 	cp "$T/upstream.lua" "$T/upstream.v4.lua"
 	echo '-- upstream v5' >>"$T/upstream.lua"
@@ -162,7 +184,7 @@ load_module $R/modules/ngx_http_lua_module.so;"
 	grep -qF 'cannot make nginx load' "$T/out.log" || fail "update did not explain the failed include: $(cat "$T/out.log")"
 	cmp -s "$T/upstream.v4.lua" "$R/etc/nginx/lua/waf.lua" || fail "waf.lua was not rolled back after the failed include"
 	[ "$(cat "$R/etc/nginx/nginx.conf")" = "$lm"$'\nevents {}' ] || fail "nginx.conf changed although the include failed"
-	[ "$(reloads)" -eq 4 ] || fail "update reloaded nginx without waf.conf loaded"
+	[ "$(reloads)" -eq 5 ] || fail "update reloaded nginx without waf.conf loaded"
 	printf '%s\nevents {}\nhttp {\n}\n' "$lm" >"$R/etc/nginx/nginx.conf"
 
 	# Modules left behind by an nginx upgrade are rebuilt and picked up by a restart, and the package manager reruns the update after nginx upgrades.
@@ -200,6 +222,17 @@ load_module $R/modules/ngx_http_lua_module.so;"
 	[ "$(grep -cx 'restart nginx' "$R/systemctl.log")" -eq $((restarts + 1)) ] || fail "nginx was not restarted on the module rebuilt with OpenSSL"
 	run "update-$platform.sh" || fail "rerun after the OpenSSL rebuild exited non-zero: $(cat "$T/out.log")"
 	grep -q 'Lua module present' "$T/out.log" || fail "a module with OpenSSL was rebuilt again"
+
+	# SELinux with httpd_execmem off makes every LuaJIT trace crash the worker, so only such a host gets jit.off(), once, with its secret kept.
+	s1="$(secret)"
+	! grep -qx 'jit.off()' "$R/etc/nginx/lua/waf-local-overrides.lua" || fail "jit.off() installed without SELinux denying executable memory"
+	SE_MODE=Enforcing SE_EXECMEM=off run "update-$platform.sh" || fail "update with httpd_execmem off exited non-zero: $(cat "$T/out.log")"
+	[ "$(grep -cx 'jit.off()' "$R/etc/nginx/lua/waf-local-overrides.lua")" -eq 1 ] || fail "jit.off() not installed once while httpd_execmem is off"
+	[ "$(secret)" = "$s1" ] || fail "turning the JIT off rotated the secret"
+	SE_MODE=Enforcing SE_EXECMEM=off run "update-$platform.sh" || fail "rerun with httpd_execmem off exited non-zero: $(cat "$T/out.log")"
+	[ "$(grep -cx 'jit.off()' "$R/etc/nginx/lua/waf-local-overrides.lua")" -eq 1 ] || fail "jit.off() added twice"
+	SE_MODE=Enforcing SE_EXECMEM=on run "update-$platform.sh" || fail "update with httpd_execmem on exited non-zero: $(cat "$T/out.log")"
+	! grep -qx 'jit.off()' "$R/etc/nginx/lua/waf-local-overrides.lua" || fail "jit.off() kept after httpd_execmem was turned on"
 done
 
 # A hand-set secret from a manual setup carries over verbatim, sed metacharacters included.
