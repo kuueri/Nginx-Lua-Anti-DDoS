@@ -1,9 +1,59 @@
 localized_global = localized_global or {}
 
+-- Upstream signs its cookies with ngx.hmac_sha1 on every request, and lua-nginx-module only has it when built with OpenSSL.
+-- Failing here, in init_by_lua_file, makes nginx reject the config instead of answering every request with 500.
+-- Plain Lua in tests/test-rules.lua has no ngx table, so the check only runs inside nginx.
+assert(not ngx or ngx.hmac_sha1, "lua-nginx-module lacks ngx.hmac_sha1; rebuild it with --with-http_ssl_module")
+
 -- install-*.sh swaps this placeholder for a per-server secret, so never commit a real one here.
 localized_global.secret = "CHANGE_ME_TO_LONG_RANDOM_SECRET"
 localized_global.expire_time = 86400
 localized_global.remote_addr = "auto"
+
+-- Upstream's automatic "I am Under Attack" mode rewrites master_switch on every request: 2 (no challenge) while at most 100 IPs are banned, 1 (challenge on every path, these included) above that.
+-- Mode 3 and these paths therefore only apply if that rewrite does not run; during an attack only whitelisted User-Agents skip the challenge.
+-- Upstream runs the WAF rules before this switch, so these paths still get every WAF_* table below.
+-- Each entry is a Lua pattern matched against scheme://host/path?query, anchored to the path so that ?x=/oai/ cannot skip the challenge.
+localized_global.master_switch = 3
+localized_global.master_switch_custom_hosts = {
+	-- DSpace 6 OAI-PMH and REST
+	{ 2, "^https?://[^/]+/oai/" },
+	{ 2, "^https?://[^/]+/rest/" },
+	-- DSpace 7 REST and OAI-PMH
+	{ 2, "^https?://[^/]+/server/api/" },
+	{ 2, "^https?://[^/]+/server/oai/" },
+	-- WordPress REST
+	{ 2, "^https?://[^/]+/wp%-json/" },
+	-- SLiMS API and OAI-PMH
+	{ 2, "^https?://[^/]+/api/v1/" },
+	{ 2, "^https?://[^/]+/oai2?%.php" },
+}
+
+-- Upstream blocks these User-Agents with 403 on every path, the challenge bypass paths included.
+-- It replaces the upstream default list, minus "curl" and "python", which OAI-PMH harvesters and REST clients use; "OAI-" is narrowed to OpenAI's OAI-SearchBot, since it also matched "OAI-Harvester".
+localized_global.user_agent_blacklist_table = {
+	{ "^\\s*$", 3 },
+	{ "Kodi", 1 },
+	{ "XBMC", 1 },
+	{ "winhttp", 1 },
+	{ "HTTrack", 1 },
+	{ "libwww-perl", 1 },
+	{ "ChatGPT", 1 },
+	{ "GPTBot", 1 },
+	{ "Deepseek", 1 },
+	{ "OAI-SearchBot", 1 },
+	{ "AI2Bot", 1 },
+}
+
+-- Search engine and plagiarism crawlers skip the blacklist and the JavaScript challenge, so the sites stay indexed and checkable; Google Scholar crawls as Googlebot.
+-- The patterns cover the desktop and smartphone User-Agents of Googlebot and Bingbot, and Turnitin's crawler.
+-- Upstream joins them into one PCRE regex for ngx.re.find; mode 3 keeps a pattern as written, while modes 1 and 4 lowercase all of it, escapes such as \S included.
+-- A client can fake its User-Agent; a match skips the challenge and the checks after it, but the WAF rules have already run.
+localized_global.user_agent_whitelist_table = {
+	{ [[compatible; Googlebot/2\.1; \+http://www\.google\.com/bot\.html\)]], 3 },
+	{ [[compatible; bingbot/2\.0; \+http://www\.bing\.com/bingbot\.htm\)]], 3 },
+	{ [[^Turnitin \(https://bit\.ly/2UvnfoQ\)]], 3 },
+}
 
 -- Upstream compiles every rule below into a PCRE regex for ngx.re.find.
 -- Its only Lua-pattern translation is %. into ".", so rules use regex escapes such as \. and never Lua ones such as %- or %/.
