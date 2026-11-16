@@ -5,24 +5,28 @@ They add local rules to the upstream script.
 
 ## Requirements
 
-- nginx with a working Lua module. The scripts do not install nginx.
-    - Ubuntu: `apt install nginx libnginx-mod-http-lua`.
-    - RPM (Rocky, RHEL, AlmaLinux): build the ndk and lua dynamic modules from source in `~/build/nginx-lua`.
-      Load them with `load_module` lines at the top of `nginx.conf`.
-      Set `lua_package_path` to lua-resty-core in the `http` block.
-- The line `include /etc/nginx/conf.d/*.conf;` in the `http` block of `nginx.conf`. The stock Ubuntu and RPM configs have this line.
-  The scripts install `waf.conf` in that directory. They stop when nginx does not load it.
+- An installed nginx. The scripts do not install nginx.
 - Root access.
+
+If nginx has no Lua module, the scripts build it from source. Ubuntu 24.04 no longer has the `libnginx-mod-http-lua` package.
+The scripts do these steps:
+
+1. They install the missing build packages: with apt on Ubuntu, with dnf on RPM (Rocky, RHEL, AlmaLinux).
+2. They build LuaJIT, lua-resty-core, and the ndk and lua modules in `/usr/local/src/nginx-lua`.
+   The modules use OpenSSL, because upstream needs `ngx.hmac_sha1`. A module without OpenSSL from an older run gets a rebuild.
+3. They add `load_module` lines to the top of the main `nginx.conf`, and `lua_package_path` to its `http` block.
+4. If `nginx -t` then fails, they restore `nginx.conf`.
 
 ## Layout
 
 | Path                             | Purpose                                                          |
 | -------------------------------- | ---------------------------------------------------------------- |
-| `config/nginx-waf.conf`          | `http` block snippet, installed as `/etc/nginx/conf.d/waf.conf`  |
+| `config/nginx-waf.conf`          | `http` block snippet that turns the WAF on for all sites         |
 | `config/waf-local-overrides.lua` | Local secret and WAF rules, installed in `/etc/nginx/lua/`       |
+| `config/waf-ban.lua`             | Blocks addresses after repeated WAF rule hits                    |
 | `scripts/install-*.sh`           | First install: makes the server secret, then runs the update     |
 | `scripts/update-*.sh`            | Update: copies `waf.lua` from upstream and applies `config/`     |
-| `scripts/lib/common.sh`          | Shared sync, backup, rollback, and reload logic                  |
+| `scripts/lib/common.sh`          | Shared module build, sync, backup, rollback, and reload logic    |
 | `tests/test-scripts.sh`          | Runs every script against a scratch root with stub commands      |
 | `tests/test-rules.lua`           | Checks the local rules against sample requests, as upstream does |
 
@@ -62,8 +66,8 @@ Each run does these steps:
 1. It downloads `anti_ddos_challenge.lua` without changes to `/etc/nginx/lua/waf.lua`. The source is the upstream commit that `scripts/lib/common.sh` pins.
 2. It installs `config/waf-local-overrides.lua` and `config/nginx-waf.conf`. It keeps the secret of the server.
 3. It backs up the old files to `/var/backups/nginx-waf/<timestamp>/`. It reloads nginx only when a file changed.
-4. It restores the old files when `nginx -t` fails or when nginx does not load `waf.conf`.
-5. It shows a warning when no site runs the WAF.
+4. If nginx does not load `waf.conf`, it adds `include /etc/nginx/conf.d/waf.conf;` to the `http` block of the main `nginx.conf`.
+   It restores the old files and `nginx.conf` when `nginx -t` fails or when nginx still does not load `waf.conf`.
 
 ### Upstream commit
 
@@ -79,15 +83,20 @@ To use a newer commit, do these steps:
 3. Run `lua tests/test-rules.lua`.
 4. When the test passes, write the new commit in `URL` in `scripts/lib/common.sh`.
 
-### nginx upgrades on RPM
+### nginx upgrades
 
 After an nginx upgrade, the source-built ndk and lua modules stay on the old version. nginx then cannot reload or start.
-`update-rpm.sh` rebuilds the modules from `BUILD_DIR` and restarts nginx.
-It also installs a dnf `post-transaction-actions` hook. This hook runs `update-rpm.sh` immediately after each nginx package upgrade. You do not need a cron job.
+The update script rebuilds the modules from `BUILD_DIR` and restarts nginx.
+It also installs a package-manager hook that runs the update script immediately after a package upgrade. You do not need a cron job.
+
+- RPM: a dnf `post-transaction-actions` hook runs `update-rpm.sh` after each nginx package upgrade.
+- Ubuntu: apt has no hook for one package. A dpkg `Post-Invoke` hook in `/etc/apt/apt.conf.d/99nginx-waf` runs `update-ubuntu.sh` after each package run.
+  That run changes nothing when nginx and the WAF files did not change.
 
 The hook builds and runs code as root. The script installs the hook only when root owns `/opt/nginx-waf`, `BUILD_DIR`, and each parent directory.
 Only root can have write access to them.
-Keep the module sources in `/usr/local/src/nginx-lua`, not in a home directory. `update-rpm.sh` uses that path when it exists:
+A build by the scripts goes to `/usr/local/src/nginx-lua`, which meets these conditions.
+An older manual build in `~/build/nginx-lua` does not. Move it once, and the update script then uses the new path:
 
 ```bash
 sudo mv ~/build/nginx-lua /usr/local/src/nginx-lua
@@ -95,19 +104,55 @@ sudo chown -R root:root /usr/local/src/nginx-lua
 sudo chmod -R go-w /usr/local/src/nginx-lua
 ```
 
-The hook needs dnf4, as on Rocky, RHEL, and AlmaLinux 8 and 9.
+On RPM, the hook needs dnf4, as on Rocky, RHEL, and AlmaLinux 8 and 9.
 If the script cannot install the dnf plugin, it shows a warning. Then you must run `update-rpm.sh` manually after each nginx upgrade.
 
-## Enable the WAF on a site
+## WAF on all sites
 
-The scripts only load the WAF. To enable it, add this line to a `server` or `location` block:
+The installed `waf.conf` contains `access_by_lua_file /etc/nginx/lua/waf.lua;` in the `http` block.
+The WAF is thus active on all sites and paths immediately after the install. You do not edit the site configs.
 
-```nginx
-access_by_lua_file /etc/nginx/lua/waf.lua;
-```
+The WAF rules apply to all requests. A request that matches a rule gets `403`.
+Upstream does not block the address for that. `waf-ban.lua` does:
 
-Do not add it to API endpoints for clients that are not browsers, for example `/wp-json/`, `/api/v1/`, `/oai/`, and `/rest/`.
-These clients cannot solve the JavaScript challenge.
+- It counts the `403` responses from the WAF for each client address.
+- After 5 of them in 10 minutes, it blocks the address for 1 hour. All requests from that address then get `403`.
+- It does not count a `403` from the application, for example DSpace, or from a `return 403` in the site config.
+- It never blocks private or loopback addresses, so a reverse proxy cannot be blocked.
+
+To change these numbers, edit `LIMIT`, `WINDOW`, and `BAN` in `config/waf-ban.lua`.
+
+Upstream also blocks an address for 24 hours for these causes:
+
+- More than 10,000 requests in 500 ms.
+- More than 1,000 failed JavaScript challenges in 1 second.
+- A forged `X-Forwarded-For` or `CF-Connecting-IP` header.
+
+The block applies to the client address, not to the address of the reverse proxy.
+
+The JavaScript challenge is automatic. Upstream turns it on only when more than 100 addresses are blocked. Then the challenge applies to all paths.
+When 100 or fewer addresses are blocked, no request gets the challenge.
+
+API clients and OAI-PMH harvesters are not browsers. They cannot solve the JavaScript challenge.
+`localized_global.master_switch_custom_hosts` in `config/waf-local-overrides.lua` lists the paths that skip the challenge:
+
+- DSpace: `/oai/`, `/rest/`, `/server/api/`, `/server/oai/`
+- WordPress: `/wp-json/`
+- SLiMS: `/api/v1/`, `/oai.php`, `/oai2.php`
+
+The WAF rules still apply to these paths. Only the challenge does not.
+To add a path, add an entry with the same form to that table.
+This list is used only when the challenge stays in mode 3. The automatic challenge during an attack ignores the list.
+
+`localized_global.user_agent_blacklist_table` blocks some User-Agents with `403` on all paths, these paths included.
+It is the upstream list without `curl` and `python`, because OAI-PMH harvesters and REST clients use these User-Agents.
+The upstream entry `OAI-` also blocked `OAI-Harvester`, so the list uses `OAI-SearchBot` instead.
+
+Googlebot, Bingbot, and the Turnitin crawler skip the blacklist and the challenge, also during an attack. Google Scholar uses Googlebot.
+`localized_global.user_agent_whitelist_table` matches their User-Agents. The WAF rules still apply to them.
+A client can fake its User-Agent. With a fake crawler User-Agent, the client also skips the challenge.
+
+To turn the WAF off for one `location`, add `access_by_lua_block { return }` to it. This handler replaces the handler from the `http` block.
 
 Upstream can get the client address from `X-Forwarded-For` or `CF-Connecting-IP`.
 It does this only when the request comes from an address in its `proxy_header_table`.
@@ -115,6 +160,11 @@ The default list contains loopback, private ranges, and Cloudflare.
 If your reverse proxy or load balancer has a different public address, set `localized_global.proxy_header_table` in `config/waf-local-overrides.lua`.
 That table replaces the default list.
 Without it, all visitors share the address of the proxy and its rate limits.
+
+If nginx uses `set_real_ip_from` and `real_ip_header X-Forwarded-For`, nginx already replaces the proxy address with the client address.
+Upstream then sees a public address together with `X-Forwarded-For`. Upstream calls this proxy impersonation and blocks the visitor for 24 hours.
+To prevent this, `waf-ban.lua` removes `X-Forwarded-For` from requests where the realip module changed the address.
+Upstream then uses the client address from nginx. A request from an address that `set_real_ip_from` does not list keeps its header.
 
 ## Local rules
 
@@ -129,4 +179,5 @@ Without it, all visitors share the address of the proxy and its rate limits.
 ```bash
 bash tests/test-scripts.sh
 lua tests/test-rules.lua
+lua tests/test-ban.lua
 ```
