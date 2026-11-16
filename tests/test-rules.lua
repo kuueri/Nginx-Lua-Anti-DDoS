@@ -29,6 +29,21 @@ end
 for _, r in ipairs(g.WAF_Header_Request_table) do
 	table.insert(rules.header, { src = r[2], raw = r[1], clean = bare(shim(r[1])), val = shim(r[2]) })
 end
+-- The User-Agent whitelist gets no shim: modes 1 and 4 become "((?i)<lowercased pattern>)", the others "(<pattern>)".
+-- For this kind, "block" in the cases means the crawler skips the challenge.
+rules.ua = {}
+for _, r in ipairs(g.user_agent_whitelist_table) do
+	local mode = r[2] or 1
+	local val = (mode == 1 or mode == 4) and "((?i)" .. r[1]:lower() .. ")" or "(" .. r[1] .. ")"
+	table.insert(rules.ua, { src = r[1], val = val })
+end
+-- The blacklist compiles the same way, and "block" means a 403 on every path.
+rules.uablock = {}
+for _, r in ipairs(g.user_agent_blacklist_table) do
+	local mode = r[2] or 1
+	local val = (mode == 1 or mode == 4) and "((?i)" .. r[1]:lower() .. ")" or "(" .. r[1] .. ")"
+	table.insert(rules.uablock, { src = r[1], val = val })
+end
 
 -- The first pass only records every regex and subject; Perl matches them all at once, and the second pass reads the results.
 local asked, index, results = {}, {}, nil
@@ -50,6 +65,12 @@ local match = {
 	end,
 	header = function(r, name, value)
 		return (name == r.clean or name == r.raw or re(name, r.raw)) and re(value, r.val)
+	end,
+	ua = function(r, value)
+		return re(value, r.val)
+	end,
+	uablock = function(r, value)
+		return re(value, r.val)
 	end,
 }
 
@@ -157,6 +178,59 @@ local cases = {
 	{ false, "header", "user-agent", "Mozilla/5.0 (X11; Linux x86_64)" },
 	{ false, "header", "referer", "https://lib.example.ac.id/index.php?keywords=trade+union+selection" },
 	{ false, "header", "x-forwarded-for", "203.0.113.7, 10.0.0.1" },
+	{ true, "ua", "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)" },
+	{
+		true,
+		"ua",
+		"Mozilla/5.0 (Linux; Android 6.0.1; Nexus 5X Build/MMB29P) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)",
+	},
+	{ true, "ua", "Mozilla/5.0 (compatible; bingbot/2.0; +http://www.bing.com/bingbot.htm)" },
+	{
+		true,
+		"ua",
+		"Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; bingbot/2.0; +http://www.bing.com/bingbot.htm) Chrome/130.0.0.0 Safari/537.36",
+	},
+	{
+		false,
+		"ua",
+		"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36",
+	},
+	{ false, "ua", "Googlebot" },
+	{ false, "ua", "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com.evil.example/bot.html)" },
+	{ true, "ua", "Turnitin (https://bit.ly/2UvnfoQ)" },
+	{ false, "ua", "Mozilla/5.0 Turnitin (https://bit.ly/2UvnfoQ)" },
+	{ true, "uablock", "" },
+	{ true, "uablock", "Kodi/21.2 (X11; Linux x86_64) Ubuntu/24.04 App_Bitness/64 Version/21.2-(21.2.0)-Git:20250204" },
+	{ true, "uablock", "XBMC/12.0 (Linux)" },
+	{ true, "uablock", "WinHttp-Autoproxy-Service/5.1" },
+	{ true, "uablock", "Mozilla/4.5 (compatible; HTTrack 3.0x; Windows 98)" },
+	{ true, "uablock", "libwww-perl/6.72" },
+	{
+		true,
+		"uablock",
+		"Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko); compatible; ChatGPT-User/1.0; +https://openai.com/bot",
+	},
+	{
+		true,
+		"uablock",
+		"Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; GPTBot/1.2; +https://openai.com/gptbot)",
+	},
+	{ true, "uablock", "DeepseekBot/1.0" },
+	{
+		true,
+		"uablock",
+		"Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko); compatible; OAI-SearchBot/1.0; +https://openai.com/searchbot",
+	},
+	{ true, "uablock", "Mozilla/5.0 (compatible) AI2Bot (+https://www.allenai.org/crawler)" },
+	{ false, "uablock", "curl/8.5.0" },
+	{ false, "uablock", "python-requests/2.32.3" },
+	{ false, "uablock", "OAI-Harvester/1.0" },
+	{ false, "uablock", "Turnitin (https://bit.ly/2UvnfoQ)" },
+	{
+		false,
+		"uablock",
+		"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36",
+	},
 }
 
 local function hits(c)
@@ -237,6 +311,43 @@ for kind, list in pairs(rules) do
 	end
 end
 
+-- Upstream's check_master_switch matches each bypass pattern with string.find against scheme://host/path?query, so plain Lua runs it here.
+local bypass_cases = {
+	{ true, "https://repo.example.ac.id/oai/request?verb=Identify" },
+	{ true, "https://repo.example.ac.id/rest/items" },
+	{ true, "https://repo.example.ac.id/server/api/core/items" },
+	{ true, "https://repo.example.ac.id/server/oai/request?verb=ListRecords" },
+	{ true, "https://wp.example.com/wp-json/wp/v2/posts" },
+	{ true, "http://lib.example.ac.id/api/v1/biblio" },
+	{ true, "http://lib.example.ac.id/oai2.php?verb=Identify" },
+	{ false, "https://repo.example.ac.id/" },
+	{ false, "https://repo.example.ac.id/handle/123456789/1" },
+	{ false, "https://repo.example.ac.id/handle/1?next=/oai/" },
+	{ false, "https://wp.example.com/?rest_route=/wp-json/" },
+}
+local bypass_used = {}
+for _, c in ipairs(bypass_cases) do
+	local hit = false
+	for _, h in ipairs(g.master_switch_custom_hosts) do
+		if c[2]:find(h[2]) then
+			hit = h[1] == 2
+			bypass_used[h] = true
+			break
+		end
+	end
+	if hit ~= c[1] then
+		failed = failed + 1
+		print(string.format("FAIL bypass %q: expected %s", c[2], c[1] and "bypass" or "challenge"))
+	end
+end
+for _, h in ipairs(g.master_switch_custom_hosts) do
+	if not bypass_used[h] then
+		failed = failed + 1
+		print(string.format("FAIL bypass pattern matches no case: %s", h[2]))
+	end
+end
+
+assert(g.master_switch == 3, "master_switch must be 3 so the bypass list applies")
 assert(#g.WAF_POST_Request_table == 0, "WAF_POST_Request_table must stay empty")
 if failed > 0 then
 	os.exit(1)

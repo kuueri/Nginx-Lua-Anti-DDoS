@@ -19,22 +19,29 @@ tee "$T/bin/id" >/dev/null <<'EOF'
 echo 0
 EOF
 # Like real nginx, -t and -T leave an empty pid file behind when nginx is stopped, and -T prints the loaded config.
-# NGINX_NO_CONFD leaves conf.d out of that config, and NGINX_SITE adds a site that runs the WAF.
+# NGINX_NO_CONFD stands for an nginx.conf without the conf.d include, so only an explicit waf.conf include loads it.
 # $ROOT/mismatch stands for modules built for an older nginx, until the make stub "rebuilds" them.
+# Without a load_module line for the Lua module in nginx.conf, a loaded waf.conf fails like real nginx does.
 tee "$T/bin/nginx" >/dev/null <<'EOF'
 #!/bin/sh
+c="$ROOT/etc/nginx/nginx.conf"
 case "$1" in
 -v) echo "nginx version: nginx/1.2.3" >&2; exit 0 ;;
--V) echo "configure arguments: --modules-path=$ROOT/modules" >&2; exit 0 ;;
+-V) echo "configure arguments: --prefix=/etc/nginx --conf-path=$c --modules-path=$ROOT/modules" >&2; exit 0 ;;
 esac
 mkdir -p "$ROOT/run"; : >>"$ROOT/run/nginx.pid"
 if [ -e "$ROOT/mismatch" ]; then echo 'nginx: [emerg] module "ngx_http_lua_module.so" version 1002002 instead of 1002003' >&2; exit 1; fi
 [ -z "$NGINX_FAIL" ] || exit 1
+waf=
+if [ -e "$ROOT/etc/nginx/conf.d/waf.conf" ] && { [ -z "$NGINX_NO_CONFD" ] || grep -qF 'include /etc/nginx/conf.d/waf.conf;' "$c" 2>/dev/null; }; then waf=1; fi
+if [ -n "$waf" ] && ! grep -q 'ngx_http_lua_module.so;' "$c" 2>/dev/null; then
+	echo 'nginx: [emerg] unknown directive "lua_shared_dict" in /etc/nginx/conf.d/waf.conf:1' >&2; exit 1
+fi
 [ "$1" = -T ] || exit 0
-if [ -z "$NGINX_NO_CONFD" ]; then
+echo "# configuration file $c:"; cat "$c" 2>/dev/null
+if [ -n "$waf" ]; then
 	for f in "$ROOT"/etc/nginx/conf.d/*.conf; do echo "# configuration file $f:"; cat "$f"; done
 fi
-if [ -n "$NGINX_SITE" ]; then printf '    access_by_lua_file /etc/nginx/lua/waf.lua;\n'; fi
 EOF
 tee "$T/bin/systemctl" >/dev/null <<'EOF'
 #!/bin/sh
@@ -44,12 +51,33 @@ tee "$T/bin/make" >/dev/null <<'EOF'
 #!/bin/sh
 rm -f "$ROOT/mismatch"
 EOF
-# rpm reports the dnf plugin as installed, so the test never reaches the real dnf; restorecon must not relabel scratch files.
+tee "$T/bin/dpkg-query" >/dev/null <<'EOF'
+#!/bin/sh
+echo 'install ok installed'
+EOF
+tee "$T/bin/git" >/dev/null <<'EOF'
+#!/bin/sh
+for dir; do :; done
+mkdir -p "$dir"
+EOF
+# rpm and dpkg-query report every package as installed, so the test never reaches the real dnf or apt; restorecon must not relabel scratch files.
 printf '#!/bin/sh\n' | tee "$T/bin/rpm" "$T/bin/restorecon" >/dev/null
 chmod +x "$T"/bin/*
 
+# A first build finds the nginx source already unpacked, so it never downloads it.
+# The configure stub writes the modules itself, and only a build with OpenSSL gets the hmac_sha1 name, as in the real lua module.
+tee "$T/configure" >/dev/null <<'EOF'
+#!/bin/sh
+mkdir -p objs
+: >objs/ndk_http_module.so
+case " $* " in *" --with-http_ssl_module "*) echo hmac_sha1 ;; esac >objs/ngx_http_lua_module.so
+EOF
+chmod +x "$T/configure"
+mkdir -p "$T/build/nginx-1.2.3"
+cp "$T/configure" "$T/build/nginx-1.2.3/configure"
+
 run() {
-	PATH="$T/bin:$PATH" ROOT="$R" URL="file://$T/upstream.lua" bash "$SCRIPTS/$1" 2>"$T/out.log"
+	PATH="$T/bin:$PATH" ROOT="$R" URL="file://$T/upstream.lua" BUILD_DIR="${BUILD_DIR:-$T/build}" bash "$SCRIPTS/$1" 2>"$T/out.log"
 }
 
 secret() {
@@ -62,7 +90,8 @@ reloads() {
 
 for platform in ubuntu rpm; do
 	R="$T/root-$platform"
-	mkdir -p "$R/etc"
+	mkdir -p "$R/etc/nginx"
+	printf 'events {}\nhttp {\n}\n' >"$R/etc/nginx/nginx.conf"
 	touch "$R/systemctl.log"
 	if [ "$platform" = ubuntu ]; then
 		echo 'ID=ubuntu' >"$R/etc/os-release"
@@ -71,10 +100,17 @@ for platform in ubuntu rpm; do
 	fi
 	printf -- '-- upstream v1\n' >"$T/upstream.lua"
 
+	lm="load_module $R/modules/ndk_http_module.so;
+load_module $R/modules/ngx_http_lua_module.so;"
+
 	# Update before install refuses instead of installing without a secret.
+	# It first gives the stock nginx a Lua module built from source, with load_module lines and lua_package_path in nginx.conf.
 	if run "update-$platform.sh"; then fail "update ran before install"; fi
 	grep -q 'run install-ubuntu.sh or install-rpm.sh first' "$T/out.log" || fail "update did not point to the installer: $(cat "$T/out.log")"
 	[ ! -e "$R/etc/nginx/lua/waf.lua" ] || fail "update installed files before install"
+	[ -f "$R/modules/ngx_http_lua_module.so" ] || fail "Lua module was not built: $(cat "$T/out.log")"
+	[ "$(head -n 2 "$R/etc/nginx/nginx.conf")" = "$lm" ] || fail "Lua module not loaded in nginx.conf: $(cat "$T/out.log" "$R/etc/nginx/nginx.conf")"
+	grep -qF 'lua_package_path "/usr/local/lib/lua/?.lua;;";' "$R/etc/nginx/nginx.conf" || fail "lua_package_path not set"
 
 	# Install generates a secret, installs upstream verbatim, reloads nginx, and leaves no empty pid file.
 	run "install-$platform.sh" || fail "install exited non-zero: $(cat "$T/out.log")"
@@ -84,13 +120,15 @@ for platform in ubuntu rpm; do
 	[ "$(stat -c %a "$R/etc/nginx/lua/waf-local-overrides.lua")" = 600 ] || fail "overrides file is not 0600"
 	[ ! -e "$R/run/nginx.pid" ] || fail "nginx -t left an empty pid file behind"
 	[ "$(reloads)" -eq 1 ] || fail "install did not reload nginx once"
-	grep -q 'WARN: no site runs the WAF yet' "$T/out.log" || fail "install did not warn that no site runs the WAF"
+	grep -qx 'access_by_lua_file /etc/nginx/lua/waf.lua;' "$R/etc/nginx/conf.d/waf.conf" || fail "install did not turn the WAF on for every site"
 
 	# Re-running install with no upstream change is a no-op and keeps the secret.
 	run "install-$platform.sh" || fail "install rerun exited non-zero: $(cat "$T/out.log")"
 	grep -q 'already up to date' "$T/out.log" || fail "install rerun did not report up to date"
 	[ "$(secret)" = "$s1" ] || fail "install rerun rotated the secret"
 	[ "$(reloads)" -eq 1 ] || fail "install rerun reloaded nginx"
+	[ "$(grep -c 'ngx_http_lua_module.so;' "$R/etc/nginx/nginx.conf")" -eq 1 ] || fail "Lua module loaded twice"
+	grep -q 'Lua module present' "$T/out.log" || fail "install rerun did not find the loaded Lua module"
 
 	# An upstream change that fails nginx -t is rolled back.
 	cp "$T/upstream.lua" "$T/upstream.v1.lua"
@@ -99,44 +137,69 @@ for platform in ubuntu rpm; do
 	cmp -s "$T/upstream.v1.lua" "$R/etc/nginx/lua/waf.lua" || fail "waf.lua was not rolled back"
 	[ "$(reloads)" -eq 1 ] || fail "failed update reloaded nginx"
 
-	# The same upstream change with a valid config is applied, keeps the secret, and does not warn once a site runs the WAF.
-	NGINX_SITE=1 run "update-$platform.sh" || fail "update exited non-zero: $(cat "$T/out.log")"
+	# The same upstream change with a valid config is applied and keeps the secret.
+	run "update-$platform.sh" || fail "update exited non-zero: $(cat "$T/out.log")"
 	cmp -s "$T/upstream.lua" "$R/etc/nginx/lua/waf.lua" || fail "update did not install the new waf.lua"
 	[ "$(secret)" = "$s1" ] || fail "update rotated the secret"
 	[ "$(reloads)" -eq 2 ] || fail "update did not reload nginx"
-	! grep -q 'WARN: no site runs the WAF yet' "$T/out.log" || fail "update warned although a site runs the WAF"
 
-	# An nginx.conf that does not include conf.d passes nginx -t without loading waf.conf, so the update is rolled back.
-	cp "$T/upstream.lua" "$T/upstream.v2.lua"
+	# An nginx.conf without the conf.d include gets one explicit waf.conf include in its http block, and a rerun adds no second one.
 	echo '-- upstream v3' >>"$T/upstream.lua"
-	if NGINX_NO_CONFD=1 run "update-$platform.sh"; then fail "update succeeded although nginx does not load waf.conf"; fi
-	grep -qF "add 'include /etc/nginx/conf.d/*.conf;'" "$T/out.log" || fail "update did not explain the missing conf.d include: $(cat "$T/out.log")"
-	cmp -s "$T/upstream.v2.lua" "$R/etc/nginx/lua/waf.lua" || fail "waf.lua was not rolled back after the conf.d check"
-	[ "$(reloads)" -eq 2 ] || fail "update reloaded nginx without waf.conf loaded"
+	NGINX_NO_CONFD=1 run "update-$platform.sh" || fail "update without the conf.d include exited non-zero: $(cat "$T/out.log")"
+	cmp -s "$T/upstream.lua" "$R/etc/nginx/lua/waf.lua" || fail "update without the conf.d include did not install waf.lua"
+	[ "$(grep -c 'include /etc/nginx/conf.d/waf.conf;' "$R/etc/nginx/nginx.conf")" -eq 1 ] || fail "waf.conf include not added to nginx.conf: $(cat "$R/etc/nginx/nginx.conf")"
+	[ "$(grep -A1 'lua_package_path' "$R/etc/nginx/nginx.conf" | tail -n 1)" = '    include /etc/nginx/conf.d/waf.conf;' ] || fail "waf.conf include does not follow lua_package_path: $(cat "$R/etc/nginx/nginx.conf")"
+	[ "$(reloads)" -eq 3 ] || fail "update with the added include did not reload nginx"
+	echo '-- upstream v4' >>"$T/upstream.lua"
+	NGINX_NO_CONFD=1 run "update-$platform.sh" || fail "rerun with the waf.conf include exited non-zero: $(cat "$T/out.log")"
+	[ "$(grep -c 'include /etc/nginx/conf.d/waf.conf;' "$R/etc/nginx/nginx.conf")" -eq 1 ] || fail "waf.conf include added twice"
 
-	# RPM: modules left behind by an nginx upgrade are rebuilt and picked up by a restart, and dnf reruns the update after every nginx upgrade.
+	# Without an http block the include has nowhere to go, so the update is rolled back and nginx.conf stays as it was.
+	cp "$T/upstream.lua" "$T/upstream.v4.lua"
+	echo '-- upstream v5' >>"$T/upstream.lua"
+	printf '%s\nevents {}\n' "$lm" >"$R/etc/nginx/nginx.conf"
+	if NGINX_NO_CONFD=1 run "update-$platform.sh"; then fail "update succeeded although nginx.conf has no http block"; fi
+	grep -qF 'cannot make nginx load' "$T/out.log" || fail "update did not explain the failed include: $(cat "$T/out.log")"
+	cmp -s "$T/upstream.v4.lua" "$R/etc/nginx/lua/waf.lua" || fail "waf.lua was not rolled back after the failed include"
+	[ "$(cat "$R/etc/nginx/nginx.conf")" = "$lm"$'\nevents {}' ] || fail "nginx.conf changed although the include failed"
+	[ "$(reloads)" -eq 4 ] || fail "update reloaded nginx without waf.conf loaded"
+	printf '%s\nevents {}\nhttp {\n}\n' "$lm" >"$R/etc/nginx/nginx.conf"
+
+	# Modules left behind by an nginx upgrade are rebuilt and picked up by a restart, and the package manager reruns the update after nginx upgrades.
 	# The hook is only installed while the tree it runs as root is writable by its owner alone, so this runs a private copy owned by the test user.
+	h="$T/hook-$platform"
+	b="$h/build"
+	mkdir -p "$b/nginx-1.2.3"
+	cp -r "$SCRIPTS" "$SCRIPTS/../config" "$h/"
+	cp "$T/configure" "$b/nginx-1.2.3/configure"
+	touch "$R/mismatch"
+	chmod -R go-w "$h"
+	SCRIPTS="$h/scripts" HOOK_UID="$(id -u)" BUILD_DIR="$b" run "update-$platform.sh" || fail "update with stale modules exited non-zero: $(cat "$T/out.log")"
+	[ ! -e "$R/mismatch" ] || fail "stale modules were not rebuilt"
+	grep -qx 'restart nginx' "$R/systemctl.log" || fail "nginx was not restarted on the rebuilt modules"
 	if [ "$platform" = rpm ]; then
-		h="$T/hook"
-		b="$h/build"
-		mkdir -p "$b/ngx_devel_kit" "$b/lua-nginx-module" "$b/nginx-1.2.3/objs" "$R/modules"
-		cp -r "$SCRIPTS" "$SCRIPTS/../config" "$h/"
-		touch "$b/nginx-1.2.3/objs/ndk_http_module.so" "$b/nginx-1.2.3/objs/ngx_http_lua_module.so" "$R/mismatch"
-		printf '#!/bin/sh\n' >"$b/nginx-1.2.3/configure"
-		chmod -R go-w "$h"
-		chmod +x "$b/nginx-1.2.3/configure"
-		SCRIPTS="$h/scripts" HOOK_UID="$(id -u)" BUILD_DIR="$b" run update-rpm.sh || fail "update with stale modules exited non-zero: $(cat "$T/out.log")"
-		[ -f "$R/modules/ngx_http_lua_module.so" ] || fail "rebuilt modules were not installed"
-		grep -qx 'restart nginx' "$R/systemctl.log" || fail "nginx was not restarted on the rebuilt modules"
-		action="$R/etc/dnf/plugins/post-transaction-actions.d/nginx-waf.action"
-		grep -qxF "nginx*:in:/usr/bin/env BUILD_DIR=$b $h/scripts/update-rpm.sh" "$action" || fail "dnf hook missing or wrong: $(cat "$T/out.log" "$action" 2>&1)"
-
-		# A build tree that others can write to would hand them root, so the hook is removed instead.
-		chmod g+w "$b/nginx-1.2.3/configure"
-		SCRIPTS="$h/scripts" HOOK_UID="$(id -u)" BUILD_DIR="$b" run update-rpm.sh || fail "update with a writable build tree exited non-zero: $(cat "$T/out.log")"
-		grep -q 'WARN: not installing the dnf hook' "$T/out.log" || fail "writable build tree did not block the dnf hook"
-		[ ! -e "$action" ] || fail "dnf hook kept although the build tree is group-writable"
+		hook="$R/etc/dnf/plugins/post-transaction-actions.d/nginx-waf.action"
+		want="nginx*:in:/usr/bin/env BUILD_DIR=$b $h/scripts/update-rpm.sh"
+	else
+		hook="$R/etc/apt/apt.conf.d/99nginx-waf"
+		want="DPkg::Post-Invoke { \"/usr/bin/env BUILD_DIR=$b $h/scripts/update-ubuntu.sh || true\"; };"
 	fi
+	grep -qxF "$want" "$hook" || fail "update hook missing or wrong: $(cat "$T/out.log" "$hook" 2>&1)"
+
+	# A build tree that others can write to would hand them root, so the hook is removed instead.
+	chmod g+w "$b/nginx-1.2.3/configure"
+	SCRIPTS="$h/scripts" HOOK_UID="$(id -u)" BUILD_DIR="$b" run "update-$platform.sh" || fail "update with a writable build tree exited non-zero: $(cat "$T/out.log")"
+	grep -q 'WARN: not installing the update hook' "$T/out.log" || fail "writable build tree did not block the update hook"
+	[ ! -e "$hook" ] || fail "update hook kept although the build tree is group-writable"
+
+	# A Lua module built without OpenSSL lacks ngx.hmac_sha1, which upstream calls on every request, so it is rebuilt with OpenSSL and nginx restarts.
+	restarts="$(grep -cx 'restart nginx' "$R/systemctl.log")"
+	: >"$R/modules/ngx_http_lua_module.so"
+	run "update-$platform.sh" || fail "update with a Lua module without OpenSSL exited non-zero: $(cat "$T/out.log")"
+	grep -q 'hmac_sha1' "$R/modules/ngx_http_lua_module.so" || fail "Lua module was not rebuilt with OpenSSL: $(cat "$T/out.log")"
+	[ "$(grep -cx 'restart nginx' "$R/systemctl.log")" -eq $((restarts + 1)) ] || fail "nginx was not restarted on the module rebuilt with OpenSSL"
+	run "update-$platform.sh" || fail "rerun after the OpenSSL rebuild exited non-zero: $(cat "$T/out.log")"
+	grep -q 'Lua module present' "$T/out.log" || fail "a module with OpenSSL was rebuilt again"
 done
 
 # A hand-set secret from a manual setup carries over verbatim, sed metacharacters included.
@@ -148,8 +211,9 @@ run "update-$platform.sh" || fail "update with a hand-set secret exited non-zero
 # deploy.sh ships the workspace scripts/ and config/ through a local ssh stub, replaces stale files, and installs.
 platform=deploy
 R="$T/root-deploy"
-mkdir -p "$R/etc" "$R/opt/nginx-waf/config" "$T/repo"
+mkdir -p "$R/etc/nginx" "$R/opt/nginx-waf/config" "$T/repo"
 echo 'ID=ubuntu' >"$R/etc/os-release"
+printf 'events {}\nhttp {\n}\n' >"$R/etc/nginx/nginx.conf"
 touch "$R/systemctl.log" "$R/opt/nginx-waf/config/stale"
 tee "$T/bin/ssh" >/dev/null <<'EOF'
 #!/bin/sh
@@ -164,7 +228,7 @@ printf '#!/bin/sh\n' >"$T/bin/chown"
 chmod +x "$T/bin/ssh" "$T/bin/sudo" "$T/bin/chown"
 cp -r "$SCRIPTS" "$SCRIPTS/../config" "$T/repo/"
 deploy() {
-	PATH="$T/bin:$PATH" ROOT="$R" URL="file://$T/upstream.lua" bash "$T/repo/scripts/deploy.sh" host 2>"$T/out.log"
+	PATH="$T/bin:$PATH" ROOT="$R" URL="file://$T/upstream.lua" BUILD_DIR="$T/build" bash "$T/repo/scripts/deploy.sh" host 2>"$T/out.log"
 }
 deploy || fail "deploy exited non-zero: $(cat "$T/out.log")"
 [ ! -e "$R/opt/nginx-waf/config/stale" ] || fail "deploy kept a file deleted from the repo"
