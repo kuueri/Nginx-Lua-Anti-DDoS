@@ -19,7 +19,7 @@ mkdir -p $dest
 cp -r $tmp/scripts $tmp/config $tmp/lua $dest/
 chown -R root:root $dest
 rm -rf $tmp
-if grep -qx ID=ubuntu $ROOT/etc/os-release; then p=ubuntu; else p=rpm; fi
+if grep -qx ID=ubuntu $ROOT/etc/os-release; then p=deb; else p=rpm; fi
 if [ -f $ROOT/etc/nginx/lua/waf-local-overrides.lua ]; then s=update; else s=install; fi
 $dest/scripts/\$s-\$p.sh
 '"

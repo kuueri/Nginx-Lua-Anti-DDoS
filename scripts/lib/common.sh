@@ -1,5 +1,5 @@
 # shellcheck shell=bash
-# Shared by update-ubuntu.sh and update-rpm.sh: logging, a pid-safe nginx -t, the Lua module build, and the WAF file sync.
+# Shared by update-deb.sh and update-rpm.sh: logging, a pid-safe nginx -t, the Lua module build, and the WAF file sync.
 # Sourcing it also checks for root and nginx, so callers stop before touching anything.
 # ROOT prefixes every system path so tests can run the scripts against a scratch tree.
 
@@ -267,7 +267,7 @@ sync_waf() {
 		if [ -z "$secret" ] || [ "$secret" = "$PLACEHOLDER_SECRET" ]; then
 			secret="${WAF_SECRET:-}"
 		fi
-		[ -n "$secret" ] || die "WAF is not installed yet; run install-ubuntu.sh or install-rpm.sh first"
+		[ -n "$secret" ] || die "WAF is not installed yet; run install-deb.sh or install-rpm.sh first"
 		# Escape sed's replacement metacharacters so a hand-set secret from a manual setup carries over verbatim.
 		sed -i "s/$PLACEHOLDER_SECRET/$(printf '%s' "$secret" | sed 's/[\/&]/\\&/g')/" "$stage/$OVERRIDES_FILE"
 	fi

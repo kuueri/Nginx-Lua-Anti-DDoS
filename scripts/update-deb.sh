@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Update Nginx-Lua-Anti-DDoS on Ubuntu: re-sync waf.lua with upstream and reapply config/.
-# Requires an existing nginx and a prior run of install-ubuntu.sh.
+# Requires an existing nginx and a prior run of install-deb.sh.
 # Ubuntu 24.04 no longer ships libnginx-mod-http-lua, so like update-rpm.sh it builds the ndk/lua modules from source when nginx lacks them or an nginx upgrade left them behind.
 set -euo pipefail
 
@@ -30,7 +30,7 @@ install_update_hook() {
 		return 0
 	fi
 	mkdir -p "$(dirname "$hook")"
-	printf 'DPkg::Post-Invoke { "/usr/bin/env BUILD_DIR=%s %s/update-ubuntu.sh || true"; };\n' "$BUILD_DIR" "$scripts" >"$hook"
+	printf 'DPkg::Post-Invoke { "/usr/bin/env BUILD_DIR=%s %s/update-deb.sh || true"; };\n' "$BUILD_DIR" "$scripts" >"$hook"
 }
 
 grep -qx 'ID=ubuntu' "$ROOT/etc/os-release" || die "this script supports Ubuntu only"

@@ -101,12 +101,12 @@ reloads() {
 	wc -l <"$R/systemctl.log"
 }
 
-for platform in ubuntu rpm; do
+for platform in deb rpm; do
 	R="$T/root-$platform"
 	mkdir -p "$R/etc/nginx"
 	printf 'events {}\nhttp {\n}\n' >"$R/etc/nginx/nginx.conf"
 	touch "$R/systemctl.log"
-	if [ "$platform" = ubuntu ]; then
+	if [ "$platform" = deb ]; then
 		echo 'ID=ubuntu' >"$R/etc/os-release"
 	else
 		printf 'ID="rocky"\nID_LIKE="rhel centos fedora"\n' >"$R/etc/os-release"
@@ -119,7 +119,7 @@ load_module $R/modules/ngx_http_lua_module.so;"
 	# Update before install refuses instead of installing without a secret.
 	# It first gives the stock nginx a Lua module built from source, with load_module lines and lua_package_path in nginx.conf.
 	if run "update-$platform.sh"; then fail "update ran before install"; fi
-	grep -q 'run install-ubuntu.sh or install-rpm.sh first' "$T/out.log" || fail "update did not point to the installer: $(cat "$T/out.log")"
+	grep -q 'run install-deb.sh or install-rpm.sh first' "$T/out.log" || fail "update did not point to the installer: $(cat "$T/out.log")"
 	[ ! -e "$R/etc/nginx/lua/waf.lua" ] || fail "update installed files before install"
 	[ -f "$R/modules/ngx_http_lua_module.so" ] || fail "Lua module was not built: $(cat "$T/out.log")"
 	[ "$(head -n 2 "$R/etc/nginx/nginx.conf")" = "$lm" ] || fail "Lua module not loaded in nginx.conf: $(cat "$T/out.log" "$R/etc/nginx/nginx.conf")"
@@ -204,7 +204,7 @@ load_module $R/modules/ngx_http_lua_module.so;"
 		want="nginx*:in:/usr/bin/env BUILD_DIR=$b $h/scripts/update-rpm.sh"
 	else
 		hook="$R/etc/apt/apt.conf.d/99nginx-waf"
-		want="DPkg::Post-Invoke { \"/usr/bin/env BUILD_DIR=$b $h/scripts/update-ubuntu.sh || true\"; };"
+		want="DPkg::Post-Invoke { \"/usr/bin/env BUILD_DIR=$b $h/scripts/update-deb.sh || true\"; };"
 	fi
 	grep -qxF "$want" "$hook" || fail "update hook missing or wrong: $(cat "$T/out.log" "$hook" 2>&1)"
 
