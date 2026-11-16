@@ -1,7 +1,8 @@
 # Nginx WAF
 
-These scripts install and update [Nginx-Lua-Anti-DDoS](https://github.com/C0nw0nk/Nginx-Lua-Anti-DDoS) on Ubuntu and RPM-based servers.
-They add local rules to the upstream script.
+This is a fork of [Nginx-Lua-Anti-DDoS](https://github.com/C0nw0nk/Nginx-Lua-Anti-DDoS) by Conor McKnight ([C0nw0nk](https://github.com/C0nw0nk)).
+Its scripts install and update the upstream WAF on Ubuntu and RPM-based servers, and add local rules to it.
+The upstream documentation is in the [upstream README](https://github.com/C0nw0nk/Nginx-Lua-Anti-DDoS#readme).
 
 ## Requirements
 
@@ -21,11 +22,12 @@ The scripts do these steps:
 
 | Path                             | Purpose                                                          |
 | -------------------------------- | ---------------------------------------------------------------- |
+| `lua/anti_ddos_challenge.lua`    | Upstream WAF, installed as `/etc/nginx/lua/waf.lua`              |
 | `config/nginx-waf.conf`          | `http` block snippet that turns the WAF on for all sites         |
 | `config/waf-local-overrides.lua` | Local secret and WAF rules, installed in `/etc/nginx/lua/`       |
 | `config/waf-ban.lua`             | Blocks addresses after repeated WAF rule hits                    |
 | `scripts/install-*.sh`           | First install: makes the server secret, then runs the update     |
-| `scripts/update-*.sh`            | Update: copies `waf.lua` from upstream and applies `config/`     |
+| `scripts/update-*.sh`            | Update: copies `waf.lua` from `lua/` and applies `config/`       |
 | `scripts/lib/common.sh`          | Shared module build, sync, backup, rollback, and reload logic    |
 | `tests/test-scripts.sh`          | Runs every script against a scratch root with stub commands      |
 | `tests/test-rules.lua`           | Checks the local rules against sample requests, as upstream does |
@@ -38,17 +40,17 @@ Run this command from this workspace:
 scripts/deploy.sh user@server
 ```
 
-The command copies `scripts/` and `config/` without changes to `/opt/nginx-waf` on the server.
+The command copies `scripts/`, `config/`, and `lua/` without changes to `/opt/nginx-waf` on the server.
 On a new server, it then runs the installer. On an installed server, it runs the update script.
 The server does not need access to this repo. It needs only ssh and sudo for `user`.
 
-To do the same steps manually, copy `scripts/` and `config/` into one root-owned directory on the server:
+To do the same steps manually, copy `scripts/`, `config/`, and `lua/` into one root-owned directory on the server:
 
 ```bash
-scp -r scripts config user@server:/tmp/nginx-waf/
+scp -r scripts config lua user@server:/tmp/nginx-waf/
 ssh user@server
 sudo mkdir -p /opt/nginx-waf
-sudo cp -r /tmp/nginx-waf/scripts /tmp/nginx-waf/config /opt/nginx-waf/
+sudo cp -r /tmp/nginx-waf/scripts /tmp/nginx-waf/config /tmp/nginx-waf/lua /opt/nginx-waf/
 sudo chown -R root:root /opt/nginx-waf
 ```
 
@@ -63,7 +65,7 @@ Keep the copy on the server. Each update reads `config/` again.
 
 Each run does these steps:
 
-1. It downloads `anti_ddos_challenge.lua` without changes to `/etc/nginx/lua/waf.lua`. The source is the upstream commit that `scripts/lib/common.sh` pins.
+1. It copies `lua/anti_ddos_challenge.lua` without changes to `/etc/nginx/lua/waf.lua`.
 2. It installs `config/waf-local-overrides.lua` and `config/nginx-waf.conf`. It keeps the secret of the server.
 3. It backs up the old files to `/var/backups/nginx-waf/<timestamp>/`. It reloads nginx only when a file changed.
 4. If nginx does not load `waf.conf`, it adds `include /etc/nginx/conf.d/waf.conf;` to the `http` block of the main `nginx.conf`.
@@ -75,17 +77,21 @@ Each run does these steps:
 
 ### Upstream commit
 
-The scripts pin one upstream commit for two reasons:
+`lua/anti_ddos_challenge.lua` is the file of the upstream commit that this fork last merged.
+The fork does not follow upstream `master` for two reasons:
 
 - Upstream changes several times each week.
 - `nginx -t` does not compile `waf.lua`. A defective upstream change can thus go live without a warning.
 
+Keep the upstream files unchanged, so that a merge has no conflicts.
 To use a newer commit, do these steps:
 
-1. Read the changes in the upstream `precompile_waf_*_table` functions.
+1. Run `git fetch upstream` and read the changes in the upstream `precompile_waf_*_table` functions.
 2. Copy those changes into `tests/test-rules.lua`.
-3. Run `lua tests/test-rules.lua`.
-4. When the test passes, write the new commit in `URL` in `scripts/lib/common.sh`.
+3. Run `git merge <commit>`, then run the tests.
+4. When the tests pass, push the merge.
+
+The `upstream` remote has no push URL, so changes go only to this fork.
 
 ### nginx upgrades
 
@@ -174,7 +180,7 @@ Upstream then uses the client address from nginx. A request from an address that
 
 - To change a rule, edit `config/waf-local-overrides.lua`. Then copy it to the server and run the update script.
 - Each `WAF_*` table in that file **replaces** the upstream default table. It does not add to it. Keep the upstream defaults that you still need.
-  The upstream defaults change only when you pin a newer commit.
+  The upstream defaults change only when you merge a newer upstream commit.
 - Keep the `CHANGE_ME_TO_LONG_RANDOM_SECRET` placeholder in the repo.
   The first install makes the real secret. The secret is only in `/etc/nginx/lua/waf-local-overrides.lua` on the server.
 
@@ -185,3 +191,13 @@ bash tests/test-scripts.sh
 lua tests/test-rules.lua
 lua tests/test-ban.lua
 ```
+
+## Credits
+
+The WAF, its JavaScript challenge, and its rule engine are the work of Conor McKnight ([C0nw0nk/Nginx-Lua-Anti-DDoS](https://github.com/C0nw0nk/Nginx-Lua-Anti-DDoS)).
+This fork adds only the install scripts, the local rules, and `waf-ban.lua`.
+To support the upstream author, use the Sponsor button of this repo or the [upstream funding page](https://github.com/C0nw0nk/Nginx-Lua-Anti-DDoS/wiki/funding).
+
+## License
+
+MIT, see `LICENSE`.

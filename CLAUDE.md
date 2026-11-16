@@ -47,11 +47,12 @@ Real nginx behaviour (Lua runtime, SELinux, systemd) is only observable on a tar
   URI rules match the raw path unanchored and case-insensitively, query rules match each decoded value as `^(?i)<pattern>$` (hence the `(?s).*` ... `.*` wrapping), and header rules match raw values unanchored and case-sensitively (hence `(?i)`).
   `tests/test-rules.lua` mirrors that compilation and runs the regexes through Perl, because stock Lua has no PCRE; every rule must block at least one case.
   The POST table stays empty because any rule there makes upstream read every POST body, uploads included, into a Lua string.
-- `URL` in `common.sh` pins upstream to one commit, because `nginx -t` never compiles `waf.lua` (`access_by_lua_file` loads on the first request).
-  Bumping it means mirroring upstream's `precompile_waf_*_table` changes in `tests/test-rules.lua` first.
+- This repo is a fork of upstream, and `URL` in `common.sh` defaults to the fork's own `lua/anti_ddos_challenge.lua`, so the last merged upstream commit is the pin, because `nginx -t` never compiles `waf.lua` (`access_by_lua_file` loads on the first request).
+  Merging a newer upstream commit means mirroring its `precompile_waf_*_table` changes in `tests/test-rules.lua` first.
+  Upstream files (`lua/`, `debian/`, `rpm/`, `.github/`, `CHANGELOG`) stay unedited so merges stay conflict-free, and the `upstream` remote has push disabled.
 - `sync_waf` checks `nginx -T`, not just `nginx -t`: a config without the `conf.d` include passes `-t` while upstream runs on its public default secret.
   When the dump lacks the `# configuration file /etc/nginx/conf.d/waf.conf:` header, it inserts `include /etc/nginx/conf.d/waf.conf;` into the main config from `nginx -V --conf-path`, after its `lua_package_path` line or else after the first `http {`, and rolls that file back with the others if nginx still does not load it.
-  It checks the header rather than the `init_by_lua_file` line, because a manual setup (vpn1) had that line indented inline in `nginx.conf` with no `access_by_lua_file` anywhere; before inserting, it deletes such inline WAF directives, since a second `lua_shared_dict` fails `nginx -t`.
+  It checks the header rather than the `init_by_lua_file` line, because a manual setup had that line indented inline in `nginx.conf` with no `access_by_lua_file` anywhere; before inserting, it deletes such inline WAF directives, since a second `lua_shared_dict` fails `nginx -t`.
 - With SELinux Enforcing and `httpd_execmem` off, LuaJIT cannot map executable memory and every worker request aborts with `lua atpanic: Lua VM crashed, reason: runtime code generation failed`, which `nginx -t` never shows.
   `sync_waf` checks `getenforce`/`getsebool` as root and appends `jit.off()` to the staged overrides, which `init_by_lua_file` runs in the master before the workers fork; the check is not done in Lua because `httpd_t` may not read the SELinux booleans.
   Upstream's FFI use is pointer casts only, which need no executable memory.
