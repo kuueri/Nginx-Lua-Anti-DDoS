@@ -241,7 +241,7 @@ printf 'localized_global.secret = "%s"\n' "$manual" >"$R/etc/nginx/lua/waf-local
 run "update-$platform.sh" || fail "update with a hand-set secret exited non-zero: $(cat "$T/out.log")"
 [ "$(secret)" = "$manual" ] || fail "hand-set secret not kept: '$(secret)'"
 
-# deploy.sh ships the workspace scripts/ and config/ through a local ssh stub, replaces stale files, and installs.
+# deploy.sh ships the workspace scripts/, config/, and lua/ through a local ssh stub, replaces stale files, and installs.
 platform=deploy
 R="$T/root-deploy"
 mkdir -p "$R/etc/nginx" "$R/opt/nginx-waf/config" "$T/repo"
@@ -259,7 +259,7 @@ exec "$@"
 EOF
 printf '#!/bin/sh\n' >"$T/bin/chown"
 chmod +x "$T/bin/ssh" "$T/bin/sudo" "$T/bin/chown"
-cp -r "$SCRIPTS" "$SCRIPTS/../config" "$T/repo/"
+cp -r "$SCRIPTS" "$SCRIPTS/../config" "$SCRIPTS/../lua" "$T/repo/"
 deploy() {
 	PATH="$T/bin:$PATH" ROOT="$R" URL="file://$T/upstream.lua" BUILD_DIR="$T/build" bash "$T/repo/scripts/deploy.sh" host 2>"$T/out.log"
 }

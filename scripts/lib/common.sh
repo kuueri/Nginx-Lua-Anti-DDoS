@@ -6,9 +6,9 @@
 CONFIG_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../config" && pwd)"
 ROOT="${ROOT:-}"
 NGINX_BIN="${NGINX_BIN:-nginx}"
-# Pinned to a reviewed commit: upstream changes several times a week, and nginx -t never compiles waf.lua, so a breaking change would go live unseen.
-# To move on, read upstream's precompile_waf_*_table changes, mirror them in tests/test-rules.lua, and bump the commit once that test passes.
-URL="${URL:-https://github.com/C0nw0nk/Nginx-Lua-Anti-DDoS/raw/4abbda5a9e76a991d01d4e281b4cc5ac27f01446/lua/anti_ddos_challenge.lua}"
+# The fork's own copy of upstream, pinned by the last reviewed merge: upstream changes several times a week, and nginx -t never compiles waf.lua, so a breaking change would go live unseen.
+# To move on, read upstream's precompile_waf_*_table changes, mirror them in tests/test-rules.lua, and merge the upstream commit once that test passes.
+URL="${URL:-file://${CONFIG_DIR%/config}/lua/anti_ddos_challenge.lua}"
 PID_FILE="$ROOT/run/nginx.pid"
 BACKUP_DIR="$ROOT/var/backups/nginx-waf/$(date +%Y%m%d%H%M%S)"
 PLACEHOLDER_SECRET="CHANGE_ME_TO_LONG_RANDOM_SECRET"
