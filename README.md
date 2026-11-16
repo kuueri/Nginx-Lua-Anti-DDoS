@@ -67,7 +67,11 @@ Each run does these steps:
 2. It installs `config/waf-local-overrides.lua` and `config/nginx-waf.conf`. It keeps the secret of the server.
 3. It backs up the old files to `/var/backups/nginx-waf/<timestamp>/`. It reloads nginx only when a file changed.
 4. If nginx does not load `waf.conf`, it adds `include /etc/nginx/conf.d/waf.conf;` to the `http` block of the main `nginx.conf`.
+   If `nginx.conf` already contains the WAF directives from a manual setup, the include replaces them.
    It restores the old files and `nginx.conf` when `nginx -t` fails or when nginx still does not load `waf.conf`.
+5. If SELinux is in Enforcing mode and the boolean `httpd_execmem` is off, it adds `jit.off()` to the installed overrides file.
+   SELinux then does not let nginx create executable memory, and the LuaJIT JIT needs it. Without `jit.off()`, each request stops the worker with `Lua VM crashed, reason: runtime code generation failed`.
+   Lua then runs without the JIT. The SELinux policy does not change.
 
 ### Upstream commit
 
