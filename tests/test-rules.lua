@@ -347,6 +347,45 @@ for _, h in ipairs(g.master_switch_custom_hosts) do
 	end
 end
 
+-- Upstream builds its default anti_ddos_table in the worker before it calls the override, so both run here against the real upstream source.
+local upstream = assert(io.open(arg[0]:gsub("[^/]*$", "") .. "../lua/anti_ddos_challenge.lua")):read("a")
+local from = assert(
+	upstream:find("if not config_store.anti_ddos_table then", 1, true),
+	"upstream default anti_ddos_table not found"
+)
+local to = assert(
+	upstream:find("\nlocalized.anti_ddos_table = function()", from, true),
+	"end of upstream default anti_ddos_table not found"
+)
+local any = setmetatable({}, {
+	__index = function(t)
+		return t
+	end,
+})
+local store = {}
+assert(load(upstream:sub(from, to), "anti_ddos_table", "t", { localized = any, config_store = store }))()
+package.loaded["anti_ddos_config_store"] = store
+local function banned_methods(site)
+	local m = {}
+	for _, r in ipairs(site[26]) do
+		m[r[1]] = r[3] == 1
+	end
+	return m
+end
+local before = banned_methods(store.anti_ddos_table[1])
+assert(
+	before.OPTIONS and before.PUT,
+	"upstream no longer bans OPTIONS and PUT in field 26; revisit the anti_ddos_table override"
+)
+for _, site in ipairs(g.anti_ddos_table()) do
+	local after = banned_methods(site)
+	assert(after.OPTIONS == nil, "anti_ddos_table override left OPTIONS in the prohibited methods")
+	assert(
+		after.PUT and after.PATCH and after.DELETE,
+		"anti_ddos_table override must keep the PUT, PATCH, and DELETE bans"
+	)
+end
+
 assert(g.master_switch == 3, "master_switch must be 3 so the bypass list applies")
 assert(#g.WAF_POST_Request_table == 0, "WAF_POST_Request_table must stay empty")
 if failed > 0 then
