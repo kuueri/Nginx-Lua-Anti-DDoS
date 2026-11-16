@@ -271,6 +271,13 @@ sync_waf() {
 		# Escape sed's replacement metacharacters so a hand-set secret from a manual setup carries over verbatim.
 		sed -i "s/$PLACEHOLDER_SECRET/$(printf '%s' "$secret" | sed 's/[\/&]/\\&/g')/" "$stage/$OVERRIDES_FILE"
 	fi
+	# LuaJIT's JIT needs executable memory, which SELinux denies nginx while httpd_execmem is off, and every worker request then aborts with
+	# "Lua VM crashed, reason: runtime code generation failed". jit.off() in init_by_lua runs in the master before the workers fork, so it covers them all.
+	# The check runs here as unconfined root, because nginx's own domain may not read the SELinux booleans.
+	if [ "$(getenforce 2>/dev/null)" = Enforcing ] && getsebool httpd_execmem 2>/dev/null | grep -q -- '--> off$'; then
+		log "SELinux denies nginx executable memory (httpd_execmem off); turning the LuaJIT JIT off"
+		printf '\njit.off()\n' >>"$stage/$OVERRIDES_FILE"
+	fi
 	# The overrides file holds the secret; only the nginx master (root) reads it via init_by_lua_file.
 	chmod 0600 "$stage/$OVERRIDES_FILE"
 	# Workers load waf.lua as the unprivileged nginx user on their first request.
@@ -304,7 +311,8 @@ sync_waf() {
 	fi
 	# Without waf.conf nginx -t still passes, but upstream then runs on its public default secret and lacks the antiddos shared dict it stores state in.
 	# So when nginx.conf has no conf.d include, the include for waf.conf goes into its http block.
-	if ! grep -qxF "init_by_lua_file /$OVERRIDES_FILE;" <<<"$conf"; then
+	# The file header of nginx -T is the check, because a manual setup can load the overrides from nginx.conf itself while waf.conf, with access_by_lua_file, stays unloaded.
+	if ! grep -qxF "# configuration file $ROOT/$HTTP_CONF:" <<<"$conf"; then
 		main_conf="$(main_conf_path)"
 		if [ ! -f "$main_conf" ]; then
 			restore_files
@@ -312,13 +320,15 @@ sync_waf() {
 		fi
 		log "Adding 'include /$HTTP_CONF;' to the http block of $main_conf"
 		copy "$main_conf" "$BACKUP_DIR/nginx.conf"
+		# A manual setup may hold waf.conf's directives inline, and nginx -t fails on a second lua_shared_dict, so the include replaces them.
+		sed -i -E '/^[[:space:]]*(lua_shared_dict[[:space:]]+(antiddos|antiddos_blocked|ddos_counter|jspuzzle_tracker|waf_strikes)[[:space:]]|init_by_lua_file[[:space:]]+\/etc\/nginx\/lua\/waf-local-overrides\.lua;|(access|rewrite|log)_by_lua_file[[:space:]]+\/etc\/nginx\/lua\/waf(-ban)?\.lua;)/d' "$main_conf"
 		# After lua_package_path when the module setup added one, so the Lua path stays first in the http block.
 		if grep -qE '^[[:space:]]*lua_package_path[[:space:]]' "$main_conf"; then
 			sed -i -E "0,/^[[:space:]]*lua_package_path[[:space:]].*$/s##&\n    include /$HTTP_CONF;#" "$main_conf"
 		else
 			sed -i -E "0,/^[[:space:]]*http[[:space:]]*\{/s##&\n    include /$HTTP_CONF;#" "$main_conf"
 		fi
-		if ! conf="$(nginx_test -T)" || ! grep -qxF "init_by_lua_file /$OVERRIDES_FILE;" <<<"$conf"; then
+		if ! conf="$(nginx_test -T)" || ! grep -qxF "# configuration file $ROOT/$HTTP_CONF:" <<<"$conf"; then
 			copy "$BACKUP_DIR/nginx.conf" "$main_conf"
 			restore_files
 			die "cannot make nginx load /$HTTP_CONF from the http block of $main_conf; restored previous files from $BACKUP_DIR"
