@@ -13,7 +13,7 @@ lua tests/test-ban.lua										# config/waf-ban.lua against a stub ngx, prints 
 ```
 
 `tests/test-scripts.sh` runs one sequential scenario per platform, then one for `deploy.sh`, and stops at the first `FAIL [platform]: ...`.
-There is no per-case runner; to focus on one platform, narrow its `for platform in ubuntu rpm` loop.
+There is no per-case runner; to focus on one platform, narrow its `for platform in deb rpm` loop.
 
 The test works on a scratch root: every script prefixes system paths with `ROOT`, stubs for the system commands sit first on `PATH`, and the upstream file is served from `URL=file://...`.
 Real nginx behaviour (Lua runtime, SELinux, systemd) is only observable on a target server.
