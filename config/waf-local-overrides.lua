@@ -284,3 +284,19 @@ localized_global.WAF_Header_Request_table = {
 
 -- Any rule here makes upstream read every POST body, uploads included, into a Lua string, so the filter stays off.
 localized_global.WAF_POST_Request_table = {}
+
+-- Upstream's default anti_ddos_table closes the connection and bans the address for 24 hours on PATCH, PUT, DELETE, CONNECT, OPTIONS, or TRACE.
+-- Readers send OPTIONS too: Microsoft Office and some browsers ask with OPTIONS before they open a bitstream link, so OPTIONS leaves that list and reaches the application again.
+-- PUT, PATCH, and DELETE stay banned, because only vulnerability scanners sent them in the DSpace access logs.
+-- Upstream calls this function once per worker, after it builds its default table, so every other default stays as upstream ships it; field 26 of each entry is the method list.
+localized_global.anti_ddos_table = function()
+	local t = package.loaded["anti_ddos_config_store"].anti_ddos_table
+	for _, site in ipairs(t) do
+		for i = #site[26], 1, -1 do
+			if site[26][i][1] == "OPTIONS" then
+				table.remove(site[26], i)
+			end
+		end
+	end
+	return t
+end
