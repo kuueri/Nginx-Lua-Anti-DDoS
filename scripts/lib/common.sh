@@ -1,5 +1,5 @@
 # shellcheck shell=bash
-# Shared by update-ubuntu.sh and update-rpm.sh: logging, a pid-safe nginx -t, and the WAF file sync.
+# Shared by update-ubuntu.sh and update-rpm.sh: logging, a pid-safe nginx -t, the Lua module build, and the WAF file sync.
 # Sourcing it also checks for root and nginx, so callers stop before touching anything.
 # ROOT prefixes every system path so tests can run the scripts against a scratch tree.
 
@@ -14,8 +14,9 @@ BACKUP_DIR="$ROOT/var/backups/nginx-waf/$(date +%Y%m%d%H%M%S)"
 PLACEHOLDER_SECRET="CHANGE_ME_TO_LONG_RANDOM_SECRET"
 WAF_FILE="etc/nginx/lua/waf.lua"
 OVERRIDES_FILE="etc/nginx/lua/waf-local-overrides.lua"
+BAN_FILE="etc/nginx/lua/waf-ban.lua"
 HTTP_CONF="etc/nginx/conf.d/waf.conf"
-FILES=("$WAF_FILE" "$OVERRIDES_FILE" "$HTTP_CONF")
+FILES=("$WAF_FILE" "$OVERRIDES_FILE" "$BAN_FILE" "$HTTP_CONF")
 WORK_DIR=""
 
 log() {
@@ -55,10 +56,198 @@ restore_files() {
 	done
 }
 
+# nginx -V gives the paths even while the config fails, which nginx -T cannot.
+nginx_build_opt() {
+	"$NGINX_BIN" -V 2>&1 | sed -n "s/.*--$1=\([^ ]*\).*/\1/p"
+}
+
+modules_path() {
+	local p
+	p="$(nginx_build_opt modules-path)"
+	echo "${p:-/etc/nginx/modules}"
+}
+
+main_conf_path() {
+	local p prefix
+	p="$(nginx_build_opt conf-path)"
+	prefix="$(nginx_build_opt prefix)"
+	echo "${p:-${prefix:-/usr/local/nginx}/conf/nginx.conf}"
+}
+
+# True while nginx cannot run Lua: its config fails on a Lua directive, or it passes without loading the Lua module.
+# The output is captured before grep -q reads it: grep -q exits on the first match, and under pipefail the SIGPIPE to nginx would turn a found module into a missing one.
+lua_module_missing() {
+	local out dump build
+	if out="$(nginx_test 2>&1)"; then
+		dump="$(nginx_test -T 2>/dev/null)" || true
+		build="$("$NGINX_BIN" -V 2>&1)" || true
+		! grep -qE '^[[:space:]]*load_module[[:space:]]+[^;]*ngx_http_lua_module\.so;' <<<"$dump" &&
+			! grep -qE -- '--add-module=[^ ]*(lua-nginx-module|ngx_lua)' <<<"$build"
+	else
+		grep -qF 'unknown directive "lua_' <<<"$out"
+	fi
+}
+
+# Load the ndk and lua modules from $1 at the top of the main config, and with $2 also set lua_package_path in its http block.
+# nginx.conf goes back as it was when nginx -t then fails.
+load_lua_module() {
+	local conf backup
+	conf="$(main_conf_path)"
+	backup="$BACKUP_DIR/nginx.conf.before-lua"
+	log "Loading the Lua module from $1 in $conf"
+	install -d -m 0700 "$BACKUP_DIR"
+	copy "$conf" "$backup"
+	sed -i -e "1i load_module $1/ndk_http_module.so;" -e "1i load_module $1/ngx_http_lua_module.so;" "$conf"
+	if [ -n "${2:-}" ] && ! grep -q 'lua_package_path' "$conf"; then
+		sed -i -E "0,/^[[:space:]]*http[[:space:]]*\{/s##&\n    lua_package_path \"$2\";#" "$conf"
+	fi
+	if ! nginx_test; then
+		copy "$backup" "$conf"
+		die "nginx -t fails with the Lua module loaded; restored $conf"
+	fi
+}
+
+# Build tree for the source-built ndk/lua modules; distro packages for them are missing or stale (Ubuntu 24.04 dropped libnginx-mod-http-lua).
+# A root-owned build tree in /usr/local/src wins, because only such a tree is safe for the root package-manager hook to build from.
+# An older manual build in the sudo user's home is still used; a first build goes to /usr/local/src.
+if [ -z "${BUILD_DIR:-}" ]; then
+	_BUILD_HOME="$(getent passwd "${SUDO_USER:-$USER}" | cut -d: -f6)"
+	BUILD_DIR="${_BUILD_HOME:-$HOME}/build/nginx-lua"
+	if [ -d /usr/local/src/nginx-lua ] || [ ! -d "$BUILD_DIR" ]; then BUILD_DIR=/usr/local/src/nginx-lua; fi
+fi
+LUAJIT_LIB="${LUAJIT_LIB:-/usr/local/luajit/lib}"
+LUAJIT_INC="${LUAJIT_INC:-/usr/local/luajit/include/luajit-2.1}"
+LUA_LIB_DIR="/usr/local/lib/lua"
+SOURCES=(openresty/luajit2 vision5/ngx_devel_kit openresty/lua-nginx-module openresty/lua-resty-core openresty/lua-resty-lrucache)
+
+# Builds only what is missing, so a rebuild after an nginx upgrade reuses everything else.
+# The calling script defines install_build_deps for its package manager.
+build_lua_module() {
+	local ver src modules_path repo
+	ver="$("$NGINX_BIN" -v 2>&1 | sed -n 's#.*nginx/##p')"
+	[ -n "$ver" ] || die "cannot detect nginx version"
+	log "Detected nginx $ver"
+
+	install_build_deps
+	install -d -m 0755 "$BUILD_DIR"
+	for repo in "${SOURCES[@]}"; do
+		if [ ! -d "$BUILD_DIR/${repo#*/}" ]; then
+			log "Downloading $repo"
+			git clone -q --depth=1 "https://github.com/$repo.git" "$BUILD_DIR/${repo#*/}"
+		fi
+	done
+
+	if [ ! -e "$ROOT$LUAJIT_LIB/libluajit-5.1.so" ]; then
+		log "Building LuaJIT into ${LUAJIT_LIB%/lib}"
+		make -C "$BUILD_DIR/luajit2" -j"$(nproc)" PREFIX="${LUAJIT_LIB%/lib}"
+		make -C "$BUILD_DIR/luajit2" install PREFIX="${LUAJIT_LIB%/lib}" DESTDIR="$ROOT"
+	fi
+	# lua-nginx-module refuses to start without resty.core.
+	if [ ! -e "$ROOT$LUA_LIB_DIR/resty/core.lua" ]; then
+		log "Installing lua-resty-core and lua-resty-lrucache into $LUA_LIB_DIR"
+		make -C "$BUILD_DIR/lua-resty-core" install PREFIX=/usr/local DESTDIR="$ROOT"
+		make -C "$BUILD_DIR/lua-resty-lrucache" install PREFIX=/usr/local DESTDIR="$ROOT"
+	fi
+
+	modules_path="$(modules_path)"
+	mkdir -p "$modules_path"
+	src="$BUILD_DIR/nginx-$ver"
+	if [ ! -d "$src" ]; then
+		log "Downloading nginx $ver source"
+		wget -qO "$BUILD_DIR/nginx-$ver.tar.gz" "https://nginx.org/download/nginx-$ver.tar.gz"
+		tar -xzf "$BUILD_DIR/nginx-$ver.tar.gz" -C "$BUILD_DIR"
+	fi
+
+	log "Building ndk/lua modules for nginx $ver"
+	(
+		cd "$src" || exit 1
+		export LUAJIT_LIB LUAJIT_INC
+		# A fresh objs/ keeps objects from an older configure, such as one without OpenSSL, out of the build.
+		rm -rf objs
+		log "Configuring build"
+		# Without OpenSSL the lua module has no ngx.hmac_sha1, which upstream calls on every request.
+		./configure \
+			--with-compat \
+			--with-http_ssl_module \
+			--with-ld-opt="-Wl,-rpath,$LUAJIT_LIB" \
+			--add-dynamic-module="$BUILD_DIR/ngx_devel_kit" \
+			--add-dynamic-module="$BUILD_DIR/lua-nginx-module"
+		log "Compiling modules"
+		make modules
+		log "Installing modules to $modules_path"
+		install -m 0644 objs/ndk_http_module.so "$modules_path/"
+		install -m 0644 objs/ngx_http_lua_module.so "$modules_path/"
+		# Relabel SELinux: .so kebawa label home dari $BUILD_DIR, tanpa ini nginx (httpd_t) gagal load.
+		if command -v restorecon >/dev/null; then
+			log "Restoring SELinux context on modules"
+			restorecon -F "$modules_path/ndk_http_module.so" "$modules_path/ngx_http_lua_module.so" ||
+				log "WARN: restorecon failed (continuing)"
+		fi
+	)
+	log "Module build complete"
+}
+
+# lua-nginx-module registers hmac_sha1 only when built with OpenSSL, so a module of ours without that name was built without it.
+lua_module_without_ssl() {
+	local so
+	so="$(modules_path)/ngx_http_lua_module.so"
+	[ -f "$so" ] && ! grep -qa 'hmac_sha1' "$so"
+}
+
+# ponytail: pakai `nginx -t` sebagai detektor mismatch — reuse cek versi bawaan nginx, gak perlu parse .so
+ensure_modules() {
+	local out
+	log "Checking nginx config and module compatibility"
+	out="$(nginx_test 2>&1)" || true
+	# Rebuild only for "version NNNN instead of MMMM"; other errors (e.g. in waf.lua) are ignored here.
+	if grep -qE 'version [0-9]+ instead of [0-9]+' <<<"$out"; then
+		log "Module version mismatch detected; rebuilding"
+		build_lua_module
+		# A reload keeps the old nginx binary, which cannot load modules built for the upgraded one, so only a restart picks them up.
+		nginx_test || die "nginx -t still fails after the module rebuild"
+		log "Restarting nginx on the rebuilt modules"
+		systemctl restart nginx
+	elif lua_module_without_ssl; then
+		log "The Lua module was built without OpenSSL and lacks ngx.hmac_sha1; rebuilding"
+		build_lua_module
+		nginx_test || die "nginx -t fails after the module rebuild"
+		log "Restarting nginx on the rebuilt modules"
+		systemctl restart nginx
+	elif lua_module_missing; then
+		log "nginx has no Lua module; building it from source in $BUILD_DIR"
+		build_lua_module
+		load_lua_module "$(modules_path)" "$LUA_LIB_DIR/?.lua;;"
+	else
+		log "Lua module present"
+	fi
+}
+
+# Owner the root update hook trusts; tests run unprivileged and pass their own uid.
+HOOK_UID="${HOOK_UID:-0}"
+
+# The hook runs this tree as root, so any account that can write to it, or to a parent directory, would gain root on the next nginx upgrade.
+# Every entry must belong to HOOK_UID and not be group- or world-writable; parents may also belong to root, and sticky ones such as /tmp may be world-writable.
+writable_by_root_only() {
+	local p
+	p="$(realpath -e -- "$1" 2>/dev/null)" || return 1
+	[ -z "$(find "$p" \( ! -uid "$HOOK_UID" -o \( ! -type l -perm /022 \) \) -print -quit)" ] || return 1
+	while [ "$p" != / ]; do
+		p="$(dirname -- "$p")"
+		[ -z "$(find "$p" -maxdepth 0 \( \( ! -uid 0 ! -uid "$HOOK_UID" \) -o \( -perm /022 ! -perm -1000 \) \) -print)" ] || return 1
+	done
+}
+
+# True when the package-manager hook may run the repo copy at $1 and BUILD_DIR as root.
+hook_is_safe() {
+	writable_by_root_only "$1" && writable_by_root_only "$BUILD_DIR" && return 0
+	log "WARN: not installing the update hook, because it would run $1 and $BUILD_DIR as root; both, with every parent, must be owned by root and not group- or world-writable (e.g. BUILD_DIR=/usr/local/src/nginx-lua)"
+	return 1
+}
+
 # Download upstream waf.lua, reapply config/, and reload nginx only when a file changed.
 # A failed nginx -t puts every file back.
 sync_waf() {
-	local stage secret f conf changed=0
+	local stage secret f conf main_conf changed=0
 
 	WORK_DIR="$(mktemp -d)"
 	trap 'rm -rf -- "$WORK_DIR"' EXIT
@@ -68,6 +257,7 @@ sync_waf() {
 	mkdir -p "$stage/etc/nginx/lua" "$stage/etc/nginx/conf.d"
 	curl -fsSL "$URL" -o "$stage/$WAF_FILE"
 	cp -- "$CONFIG_DIR/waf-local-overrides.lua" "$stage/$OVERRIDES_FILE"
+	cp -- "$CONFIG_DIR/waf-ban.lua" "$stage/$BAN_FILE"
 	cp -- "$CONFIG_DIR/nginx-waf.conf" "$stage/$HTTP_CONF"
 
 	# The installed secret wins, so visitors' auth cookies survive updates.
@@ -84,7 +274,7 @@ sync_waf() {
 	# The overrides file holds the secret; only the nginx master (root) reads it via init_by_lua_file.
 	chmod 0600 "$stage/$OVERRIDES_FILE"
 	# Workers load waf.lua as the unprivileged nginx user on their first request.
-	chmod 0644 "$stage/$WAF_FILE" "$stage/$HTTP_CONF"
+	chmod 0644 "$stage/$WAF_FILE" "$stage/$BAN_FILE" "$stage/$HTTP_CONF"
 
 	for f in "${FILES[@]}"; do
 		cmp -s "$stage/$f" "$ROOT/$f" || changed=1
@@ -113,12 +303,26 @@ sync_waf() {
 		die "nginx -t failed; restored previous files from $BACKUP_DIR"
 	fi
 	# Without waf.conf nginx -t still passes, but upstream then runs on its public default secret and lacks the antiddos shared dict it stores state in.
+	# So when nginx.conf has no conf.d include, the include for waf.conf goes into its http block.
 	if ! grep -qxF "init_by_lua_file /$OVERRIDES_FILE;" <<<"$conf"; then
-		restore_files
-		die "nginx does not load /$HTTP_CONF; add 'include /etc/nginx/conf.d/*.conf;' inside the http block of nginx.conf"
-	fi
-	if ! grep -qE '^[[:space:]]*access_by_lua_file[[:space:]]' <<<"$conf"; then
-		log "WARN: no site runs the WAF yet; add 'access_by_lua_file /$WAF_FILE;' to its server or location block"
+		main_conf="$(main_conf_path)"
+		if [ ! -f "$main_conf" ]; then
+			restore_files
+			die "cannot find the main nginx config at $main_conf; restored previous files from $BACKUP_DIR"
+		fi
+		log "Adding 'include /$HTTP_CONF;' to the http block of $main_conf"
+		copy "$main_conf" "$BACKUP_DIR/nginx.conf"
+		# After lua_package_path when the module setup added one, so the Lua path stays first in the http block.
+		if grep -qE '^[[:space:]]*lua_package_path[[:space:]]' "$main_conf"; then
+			sed -i -E "0,/^[[:space:]]*lua_package_path[[:space:]].*$/s##&\n    include /$HTTP_CONF;#" "$main_conf"
+		else
+			sed -i -E "0,/^[[:space:]]*http[[:space:]]*\{/s##&\n    include /$HTTP_CONF;#" "$main_conf"
+		fi
+		if ! conf="$(nginx_test -T)" || ! grep -qxF "init_by_lua_file /$OVERRIDES_FILE;" <<<"$conf"; then
+			copy "$BACKUP_DIR/nginx.conf" "$main_conf"
+			restore_files
+			die "cannot make nginx load /$HTTP_CONF from the http block of $main_conf; restored previous files from $BACKUP_DIR"
+		fi
 	fi
 
 	log "Reloading nginx"
@@ -127,4 +331,4 @@ sync_waf() {
 }
 
 [ "$(id -u)" -eq 0 ] || die "run as root (sudo)"
-command -v "$NGINX_BIN" >/dev/null || die "nginx not found; install nginx with the Lua module first"
+command -v "$NGINX_BIN" >/dev/null || die "nginx not found; install nginx first"
