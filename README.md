@@ -134,8 +134,12 @@ Upstream bans an address for 24 hours for these causes:
 
 - More than 10,000 requests in 500 ms.
 - More than 1,000 failed JavaScript challenges in 1 second.
-- A request method that upstream prohibits: `PATCH`, `PUT`, `DELETE`, `CONNECT`, `OPTIONS`, or `TRACE`.
+- A request method that upstream prohibits: `PATCH`, `PUT`, `DELETE`, `CONNECT`, or `TRACE`.
 - A forged `X-Forwarded-For` or `CF-Connecting-IP` header.
+
+Upstream also prohibits `OPTIONS`, but `config/waf-local-overrides.lua` removes it from that list.
+Microsoft Office and some browsers send `OPTIONS` before they open a document link, so these readers got a 24-hour ban.
+`OPTIONS` requests now go to the application.
 
 Upstream and `waf-ban.lua` keep their bans in nginx shared memory. A reload keeps the bans. Only a restart of nginx removes them.
 
