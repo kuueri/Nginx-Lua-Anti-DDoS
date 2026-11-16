@@ -1,0 +1,569 @@
+############################################################
+# Version Macros (set via build parameters or defaults)
+############################################################
+%{!?script_ver:   %global script_ver   1.0}
+%{!?release_tag:  %global release_tag  1}
+
+############################################################
+# Package Information
+############################################################
+Name:           nginx-lua-anti-ddos-challenge
+Version:        %{script_ver}
+Release:        %{release_tag}
+Summary:        Nginx Lua Anti-DDoS script
+
+License:        MIT
+URL:            https://github.com/C0nw0nk/Nginx-Lua-Anti-DDoS
+Source0:        anti_ddos_challenge.lua
+Source1:        LICENSE
+Source2:        README.md
+
+BuildArch:      noarch
+
+# Dont explicit require due to compatiblity
+#Requires:       lua luajit2 lua-socket
+#Requires:       lua-resty-core >= 0.1.28
+
+%description
+This package provides `anti_ddos_challenge.lua`, a Lua script designed to protect Nginx web servers from DDoS attacks by implementing an authentication puzzle mechanism.
+
+**Dependencies and Requirements:**
+
+- Nginx must be compiled with the Lua module enabled.
+- The Lua environment should include:
+  - lua
+  - luajit2
+  - lua-socket
+  - lua-resty-core (version 0.1.28 or higher)
+
+These dependencies are critical as the script relies on them for proper functionality within the Nginx Lua module context.
+
+Make sure to install and configure these prerequisites before deploying this script to ensure its effectiveness and compatibility.
+
+%prep
+# No preparation needed
+
+%build
+# No build needed
+
+%install
+rm -rf %{buildroot}
+install -D -m 0644 %{SOURCE0} %{buildroot}/etc/nginx/anti_ddos_challenge.lua
+install -D -m 0644 %{SOURCE1} %{buildroot}/usr/share/licenses/%{name}/LICENSE
+install -D -m 0644 %{SOURCE2} %{buildroot}/usr/share/doc/%{name}/README.md
+
+%files
+%license /usr/share/licenses/%{name}/LICENSE
+%doc /usr/share/doc/%{name}/README.md
+%config(noreplace) /etc/nginx/anti_ddos_challenge.lua
+
+%post
+if [ -f /etc/nginx/anti_ddos_challenge.lua.rpmnew ]; then
+  echo "Warning: /etc/nginx/anti_ddos_challenge.lua already exists and differs from the packaged version."
+  echo "A new version of the file has been installed as /etc/nginx/anti_ddos_challenge.lua.rpmnew."
+  echo "Please review and merge changes if appropriate."
+fi
+
+# Auto added - DONT REMOVE
+%changelog
+* Thu Oct 15 2026 C0nw0nk <C0nw0nk@github> - 6.9-1
+- Add missing checks on localized_global.encrypt_storage_types and localized_global.storage_compression_types that allow for these vars to be controlled via overrides from nginx config etc if needed.
+- Performance improvements on systems than can run 64bit compared to 32bit.
+* Thu Oct 15 2026 C0nw0nk <C0nw0nk@github> - 6.9-1
+- Add missing checks on localized_global.encrypt_storage_types and localized_global.storage_compression_types that allow for these vars to be controlled via overrides from nginx config etc if needed.
+- Performance improvements on systems than can run 64bit compared to 32bit.
+* Thu Oct 15 2026 C0nw0nk <C0nw0nk@github> - 6.8-1
+- Added Feature ability to encrypt/compress only Content-Cache items that way IP addresses/Flood trackers can be stored unencrypted/uncompressed now it is optional and can choose.
+- Fixed a bug where i named config_store.anti_ddos_table - config_store.anti_ddos_data by accident.
+* Thu Oct 15 2026 C0nw0nk <C0nw0nk@github> - 6.8-1
+- Added Feature ability to encrypt/compress only Content-Cache items that way IP addresses/Flood trackers can be stored unencrypted/uncompressed now it is optional and can choose.
+- Fixed a bug where i named config_store.anti_ddos_table - config_store.anti_ddos_data by accident.
+* Wed Oct 14 2026 C0nw0nk <C0nw0nk@github> - 6.7-1
+- Improve performance of config vars by caching them so Lua garbage collector does not get thrashed creating and destroying tables.
+* Wed Oct 14 2026 C0nw0nk <C0nw0nk@github> - 6.7-1
+- Improve performance of config vars by caching them so Lua garbage collector does not get thrashed creating and destroying tables.
+* Fri Oct 09 2026 C0nw0nk <C0nw0nk@github> - 6.6-1
+- Pre compile WAF rules to be faster.
+* Fri Oct 09 2026 C0nw0nk <C0nw0nk@github> - 6.6-1
+- Pre compile WAF rules to be faster.
+* Thu Oct 08 2026 C0nw0nk <C0nw0nk@github> - 6.5-1
+- Make the 1million IP limit on the Ram Cache configurable so users can change it at any time if you increase your lua_shared_dict capacity you can also increase this.
+* Thu Oct 08 2026 C0nw0nk <C0nw0nk@github> - 6.5-1
+- Make the 1million IP limit on the Ram Cache configurable so users can change it at any time if you increase your lua_shared_dict capacity you can also increase this.
+* Wed Oct 07 2026 C0nw0nk <C0nw0nk@github> - 6.4-1
+- Improvements on speed avoiding memory thrashing / leaks etc.
+- Make user-agent blacklist / whitelist matching faster.
+* Wed Oct 07 2026 C0nw0nk <C0nw0nk@github> - 6.4-1
+- Improvements on speed avoiding memory thrashing / leaks etc.
+- Make user-agent blacklist / whitelist matching faster.
+* Tue Oct 06 2026 C0nw0nk <C0nw0nk@github> - 6.3-1
+- Various speed and performance improvements re-order functions use caching and memory more efficiently.
+* Tue Oct 06 2026 C0nw0nk <C0nw0nk@github> - 6.3-1
+- Various speed and performance improvements re-order functions use caching and memory more efficiently.
+* Sat Oct 03 2026 C0nw0nk <C0nw0nk@github> - 6.2-1
+- Use Lua built in base64 and improve JS scrambler speed
+* Sat Oct 03 2026 C0nw0nk <C0nw0nk@github> - 6.2-1
+- Use Lua built in base64 and improve JS scrambler speed
+* Fri Oct 02 2026 C0nw0nk <C0nw0nk@github> - 6.1-1
+- FFI is faster than most functions so we use FFI in place with C code to improve performance
+- Do not use math.pow anywhere any more so removed and speed up other functions
+- Improve cookie matching on content-cache
+* Fri Oct 02 2026 C0nw0nk <C0nw0nk@github> - 6.1-1
+- FFI is faster than most functions so we use FFI in place with C code to improve performance
+- Do not use math.pow anywhere any more so removed and speed up other functions
+- Improve cookie matching on content-cache
+* Fri Oct 02 2026 C0nw0nk <C0nw0nk@github> - 6.1-1
+- FFI is faster than most functions so we use FFI in place with C code to improve performance
+- Do not use math.pow anywhere any more so removed and speed up other functions
+- Improve cookie matching on content-cache
+* Fri Oct 02 2026 C0nw0nk <C0nw0nk@github> - 6.1-1
+- FFI is faster than most functions so we use FFI in place with C code to improve performance
+- Do not use math.pow anywhere any more so removed and speed up other functions
+- Improve cookie matching on content-cache
+* Wed Sep 30 2026 C0nw0nk <C0nw0nk@github> - 6.0-1
+- Performance Improvements on IPv4/IPv6 matching
+* Wed Sep 30 2026 C0nw0nk <C0nw0nk@github> - 6.0-1
+- Performance Improvements on IPv4/IPv6 matching
+* Wed Sep 30 2026 C0nw0nk <C0nw0nk@github> - 5.9-1
+- Improve performance fast IP range/address lookups
+* Wed Sep 30 2026 C0nw0nk <C0nw0nk@github> - 5.9-1
+- Improve performance fast IP range/address lookups
+* Mon Sep 28 2026 C0nw0nk <C0nw0nk@github> - 5.8-1
+- Added Feature Merge IP lists
+- Added Feature auto add server IP address to IP lists
+- Added Feature Compressed storage min/max size
+* Mon Sep 28 2026 C0nw0nk <C0nw0nk@github> - 5.8-1
+- Added Feature Merge IP lists
+- Added Feature auto add server IP address to IP lists
+- Added Feature Compressed storage min/max size
+* Sat Sep 26 2026 C0nw0nk <C0nw0nk@github> - 5.7-1
+- Allow both tables or functions in script overrides
+* Sat Sep 26 2026 C0nw0nk <C0nw0nk@github> - 5.7-1
+- Allow both tables or functions in script overrides
+* Sat Sep 26 2026 C0nw0nk <C0nw0nk@github> - 5.6-1
+- Tables into functions to defer execution so that input vars and strings execute in order of when called.
+* Thu Sep 24 2026 C0nw0nk <C0nw0nk@github> - 5.5-1
+- Remove un-needed vars and Optimise functions for runtime improvements.
+* Thu Sep 24 2026 C0nw0nk <C0nw0nk@github> - 5.5-1
+- Remove un-needed vars and Optimise functions for runtime improvements.
+* Wed Sep 23 2026 C0nw0nk <C0nw0nk@github> - 5.4-1
+- Cache localized functions for better performance
+- ngx.escape_uri faster than my function
+* Tue Sep 22 2026 C0nw0nk <C0nw0nk@github> - 5.3-1
+- Improvements on WAF checks and internal header checks
+* Mon Sep 21 2026 C0nw0nk <C0nw0nk@github> - 5.2-1
+- Fixes for multiple headers of the same type that Lua creates into a table just use the latest / last value.
+* Mon Sep 21 2026 C0nw0nk <C0nw0nk@github> - 5.1-1
+- localized.ngx.now()-localized.ngx.req.start_time() is faster than localized.ngx_var.request_time
+- Use cached functions on other header checks for better performance.
+* Sun Sep 20 2026 C0nw0nk <C0nw0nk@github> - 5.0-1
+- ngx.req.get_method() is faster than ngx.var.request_method
+* Sun Sep 20 2026 C0nw0nk <C0nw0nk@github> - 5.0-1
+- ngx.req.get_method() is faster than ngx.var.request_method
+* Sat Sep 19 2026 C0nw0nk <C0nw0nk@github> - 4.9-1
+- Improve Performance of functions.
+* Sat Sep 19 2026 C0nw0nk <C0nw0nk@github> - 4.9-1
+- Improve Performance of functions.
+* Fri Sep 18 2026 C0nw0nk <C0nw0nk@github> - 4.8-1
+- Caching on strings and Improvements.
+* Wed Sep 16 2026 C0nw0nk <C0nw0nk@github> - 4.7-1
+- Added Feature option to use alternative encryption for javascript puzzle default is hmac sha1 - xor added
+- Reorder functions for execution priority
+* Mon Sep 14 2026 C0nw0nk <C0nw0nk@github> - 4.6-1
+- Performance improvements by caching outputs
+* Mon Sep 14 2026 C0nw0nk <C0nw0nk@github> - 4.6-1
+- Performance improvements by caching outputs
+* Sun Sep 13 2026 C0nw0nk <C0nw0nk@github> - 4.5-1
+- Added Feature ZSTD Facebook Zstandard Compression support for storage
+- Added Feature Google Snappy Compression support for storage
+- Added Feature Brotli Compression support for storage
+* Sat Sep 12 2026 C0nw0nk <C0nw0nk@github> - 4.4-1
+- Added Feature resty zip compression for storage
+- Re-ordered storage so that compression takes place before encryption and in reverse decryption happens before decompression the result is encrypted storage items are smaller a huge win.
+* Sat Sep 12 2026 C0nw0nk <C0nw0nk@github> - 4.4-1
+- Added Feature resty zip compression for storage
+- Re-ordered storage so that compression takes place before encryption and in reverse decryption happens before decompression the result is encrypted storage items are smaller a huge win.
+* Sat Sep 12 2026 C0nw0nk <C0nw0nk@github> - 4.4-1
+- Added Feature resty zip compression for storage
+- Re-ordered storage so that compression takes place before encryption and in reverse decryption happens before decompression the result is encrypted storage items are smaller a huge win.
+* Fri Sep 11 2026 C0nw0nk <C0nw0nk@github> - 4.3-1
+- Added Feature LZW compression on stored data to save disk/storage space/memory
+- Added Feature AES encryption on storage
+* Fri Sep 11 2026 C0nw0nk <C0nw0nk@github> - 4.3-1
+- Added Feature LZW compression on stored data to save disk/storage space/memory
+- Added Feature AES encryption on storage
+* Wed Sep 09 2026 C0nw0nk <C0nw0nk@github> - 4.2-1
+- Added Feature Storage Encryption for sensative information being stored on redis servers memcached etc or cached pages that could contain email addresses bank information etc this will encrypt that data
+- TODO: In progress Storage Compression zstd zstandard
+* Wed Sep 09 2026 C0nw0nk <C0nw0nk@github> - 4.2-1
+- Added Feature Storage Encryption for sensative information being stored on redis servers memcached etc or cached pages that could contain email addresses bank information etc this will encrypt that data
+- TODO: In progress Storage Compression zstd zstandard
+* Sat Aug 29 2026 C0nw0nk <C0nw0nk@github> - 4.1-1
+- Added Feature to have banned IPs flooding get their bans extended
+- Added Feature IP tracking in rate limit window is not extended on each request or to have IP rate extended
+- Added Feature Content Caching do not extend cache ttl on Status HIT or to extend cache ttl on Status HIT
+- Adjust JS Puzzle IP Flood protection to not be so strict
+- Added info on memcached server since memcached servers do not support milliseconds on TTL's
+* Sat Aug 29 2026 C0nw0nk <C0nw0nk@github> - 4.1-1
+- Added Feature to have banned IPs flooding get their bans extended
+- Added Feature IP tracking in rate limit window is not extended on each request or to have IP rate extended
+- Added Feature Content Caching do not extend cache ttl on Status HIT or to extend cache ttl on Status HIT
+- Adjust JS Puzzle IP Flood protection to not be so strict
+- Added info on memcached server since memcached servers do not support milliseconds on TTL's
+* Sat Aug 29 2026 C0nw0nk <C0nw0nk@github> - 4.1-1
+- Added Feature to have banned IPs flooding get their bans extended
+- Added Feature IP tracking in rate limit window is not extended on each request or to have IP rate extended
+- Added Feature Content Caching do not extend cache ttl on Status HIT or to extend cache ttl on Status HIT
+- Adjust JS Puzzle IP Flood protection to not be so strict
+- Added info on memcached server since memcached servers do not support milliseconds on TTL's
+* Sat Aug 29 2026 C0nw0nk <C0nw0nk@github> - 4.1-1
+- Added Feature to have banned IPs flooding get their bans extended
+- Added Feature IP tracking in rate limit window is not extended on each request or to have IP rate extended
+- Added Feature Content Caching do not extend cache ttl on Status HIT or to extend cache ttl on Status HIT
+- Adjust JS Puzzle IP Flood protection to not be so strict
+- Added info on memcached server since memcached servers do not support milliseconds on TTL's
+* Tue Aug 18 2026 C0nw0nk <C0nw0nk@github> - 4.0-1
+- Added feature: protection from excessive log writing DoS when blocked IPs are less than the limit. For example, the default limit is 100 IPs. If 100 IPs attack you and fill up the block list, logging is turned off to prevent CPU consumption. When the blocklist is empty or has fewer than 100 IPs, a single IP could essentially spam and cause Nginx to use up CPU writing logs; this resolves that issue.
+- Add True Client IP for the Emby web server.
+- Security Protection: Remove information disclosure. The Emby web server adds headers. Private-Network-Access-Id and Private-Network-Access-Name can be used for fingerprinting.
+- Security Protection: Remove information disclosure. The Plex web server adds the header X-Plex-Protocol.
+- Added feature: more stats on blocked traffic and allowed traffic what can be used here https://github.com/C0nw0nk/Nginx-Lua-Anti-DDoS/wiki/Anti%E2%80%90DDoS-Stats-and-Metrics
+* Tue Aug 18 2026 C0nw0nk <C0nw0nk@github> - 4.0-1
+- Added feature: protection from excessive log writing DoS when blocked IPs are less than the limit. For example, the default limit is 100 IPs. If 100 IPs attack you and fill up the block list, logging is turned off to prevent CPU consumption. When the blocklist is empty or has fewer than 100 IPs, a single IP could essentially spam and cause Nginx to use up CPU writing logs; this resolves that issue.
+- Add True Client IP for the Emby web server.
+- Security Protection: Remove information disclosure. The Emby web server adds headers. Private-Network-Access-Id and Private-Network-Access-Name can be used for fingerprinting.
+- Security Protection: Remove information disclosure. The Plex web server adds the header X-Plex-Protocol.
+- Added feature: more stats on blocked traffic and allowed traffic what can be used here https://github.com/C0nw0nk/Nginx-Lua-Anti-DDoS/wiki/Anti%E2%80%90DDoS-Stats-and-Metrics
+* Tue Aug 18 2026 C0nw0nk <C0nw0nk@github> - 4.0-1
+- Added feature: protection from excessive log writing DoS when blocked IPs are less than the limit. For example, the default limit is 100 IPs. If 100 IPs attack you and fill up the block list, logging is turned off to prevent CPU consumption. When the blocklist is empty or has fewer than 100 IPs, a single IP could essentially spam and cause Nginx to use up CPU writing logs; this resolves that issue.
+- Add True Client IP for the Emby web server.
+- Security Protection: Remove information disclosure. The Emby web server adds headers. Private-Network-Access-Id and Private-Network-Access-Name can be used for fingerprinting.
+- Security Protection: Remove information disclosure. The Plex web server adds the header X-Plex-Protocol.
+- Added feature: more stats on blocked traffic and allowed traffic what can be used here https://github.com/C0nw0nk/Nginx-Lua-Anti-DDoS/wiki/Anti%E2%80%90DDoS-Stats-and-Metrics
+* Wed Jun 10 2026 C0nw0nk <C0nw0nk@github> - 3.9-1
+- Default script values to use same shared memory spaces making the use lighter for new users.
+- Change some examples for better and remove braces from ddos log output. tidy up code.
+* Mon Jun 08 2026 C0nw0nk <C0nw0nk@github> - 3.8-1
+- Added Security Features
+- Maximum number of headers browsers send improvements optional banning of users who exceed limits.
+- Maximum number of uri arguments allowed /?arg1=1&arg2=2
+- Maximum request URI length research on this shows most browsers have url limits if a url from a website is longer than 2000 chars it causes problems so the limit is 2000.
+- Added support for resty.shell
+- Added support for ngx.io
+- Remove os.date and use own function non blocking io operation.
+* Mon Jun 08 2026 C0nw0nk <C0nw0nk@github> - 3.8-1
+- Added Security Features
+- Maximum number of headers browsers send improvements optional banning of users who exceed limits.
+- Maximum number of uri arguments allowed /?arg1=1&arg2=2
+- Maximum request URI length research on this shows most browsers have url limits if a url from a website is longer than 2000 chars it causes problems so the limit is 2000.
+- Added support for resty.shell
+- Added support for ngx.io
+- Remove os.date and use own function non blocking io operation.
+* Fri Jun 05 2026 C0nw0nk <C0nw0nk@github> - 3.7-1
+- Added Connection Handling for content-cache
+* Thu Jun 04 2026 C0nw0nk <C0nw0nk@github> - 3.6-1
+- Added security feature maximum number of request headers browsers allowed to send.
+- Remote caching / storage allow users to control keep alive connections and to close connections once information is passed.
+* Thu Jun 04 2026 C0nw0nk <C0nw0nk@github> - 3.6-1
+- Added security feature maximum number of request headers browsers allowed to send.
+- Remote caching / storage allow users to control keep alive connections and to close connections once information is passed.
+* Sun May 31 2026 C0nw0nk <C0nw0nk@github> - 3.5-1
+- Improved cache for dynamic inputs remote_cache() would return the same ngx.shared.DICT for all calls now it can return different based on table input.
+* Sun May 31 2026 C0nw0nk <C0nw0nk@github> - 3.5-1
+- Improved cache for dynamic inputs remote_cache() would return the same ngx.shared.DICT for all calls now it can return different based on table input.
+* Sat May 30 2026 C0nw0nk <C0nw0nk@github> - 3.4-1
+- Added Feature Support for other external libraries for remote cache / storage.
+- Added support for Redis Cluster `rediscluster` maintained by https://github.com/api7/lua-resty-redis-cluster
+- Added support for Private Openresty XRay libraries
+- resty.redis.cluster.fast https://doc.openresty.com/en/xray/priv-libs/lua-resty-redis-cluster-fast/#connect
+- resty.redis.fast https://doc.openresty.com/en/xray/priv-libs/lua-resty-redis-fast/#lua-interface
+- resty.memcached.fast https://doc.openresty.com/en/xray/priv-libs/#lua-resty-memcached-fast
+* Sat May 30 2026 C0nw0nk <C0nw0nk@github> - 3.4-1
+- Added Feature Support for other external libraries for remote cache / storage.
+- Added support for Redis Cluster `rediscluster` maintained by https://github.com/api7/lua-resty-redis-cluster
+- Added support for Private Openresty XRay libraries
+- resty.redis.cluster.fast https://doc.openresty.com/en/xray/priv-libs/lua-resty-redis-cluster-fast/#connect
+- resty.redis.fast https://doc.openresty.com/en/xray/priv-libs/lua-resty-redis-fast/#lua-interface
+- resty.memcached.fast https://doc.openresty.com/en/xray/priv-libs/#lua-resty-memcached-fast
+* Sat May 23 2026 C0nw0nk <C0nw0nk@github> - 3.3-1
+- Added Features ability to use Remote servers for Anti-DDoS data/key storage
+- Added Feature ability to use redis cache server for anti-ddos protection
+- Added Feature ability to use memcached server for anti-ddos protection
+* Sun May 17 2026 C0nw0nk <C0nw0nk@github> - 3.2-1
+- Added Feature ability to use redis cache server
+- Added Feature ability to use memcached server
+- Added Feature ability to use lrucache
+- Added Feature ability to use fallback servers for items store in cache incase server is down/offline
+* Sun May 17 2026 C0nw0nk <C0nw0nk@github> - 3.2-1
+- Added Feature ability to use redis cache server
+- Added Feature ability to use memcached server
+- Added Feature ability to use lrucache
+- Added Feature ability to use fallback servers for items store in cache incase server is down/offline
+* Mon May 11 2026 C0nw0nk <C0nw0nk@github> - 3.1-1
+- Added Feature for Caching only when cookie exists so now not only can you always cache and bypass cache on cookie but you can also not cache unless cookie is present useful for those who only want to enable caching when users browser has the correct cookie.
+* Sun May 10 2026 C0nw0nk <C0nw0nk@github> - 3.0-1
+- Added Additional options for caching display of set-cookie headers on cached pages 0 do not remove set-cookie header 1 remove set-cookie header on both HIT/UPDATING 2 remove from HIT ONLY 3 remove from UPDATING ONLY default behaviour is 2 for safety so cache updating / miss will send cookie headers but on cache HIT no header is sent
+* Sun May 10 2026 C0nw0nk <C0nw0nk@github> - 3.0-1
+- Added Additional options for caching display of set-cookie headers on cached pages 0 do not remove set-cookie header 1 remove set-cookie header on both HIT/UPDATING 2 remove from HIT ONLY 3 remove from UPDATING ONLY default behaviour is 2 for safety so cache updating / miss will send cookie headers but on cache HIT no header is sent
+* Fri Apr 17 2026 C0nw0nk <C0nw0nk@github> - 2.9-1
+- Added Feature allow content cache to match any type by using nil or empty string previous behaviour only matched by mime-type.
+- Added Feature for Hidden services like Tor, Freenet, invisible internet project etc to be controlled via nginx.conf file and to easily have other private internet services added via a Lua table easily that way other services users want to add can do so without needing to modify the scripts code.
+- Added Privacy features / compatibility with other privacy networks other than just .Tor Listed.
+- Added .eth ENS
+- Added Freenet
+- Added IPFS inter planetary file system
+- Added IPNS inter planetary name system
+- Added SWARM network
+- Added Radicale
+- Added i2p the invisible internet project
+- Added Lokinet
+- Added Zeronet
+* Fri Apr 17 2026 C0nw0nk <C0nw0nk@github> - 2.9-1
+- Added Feature allow content cache to match any type by using nil or empty string previous behaviour only matched by mime-type.
+- Added Feature for Hidden services like Tor, Freenet, invisible internet project etc to be controlled via nginx.conf file and to easily have other private internet services added via a Lua table easily that way other services users want to add can do so without needing to modify the scripts code.
+- Added Privacy features / compatibility with other privacy networks other than just .Tor Listed.
+- Added .eth ENS
+- Added Freenet
+- Added IPFS inter planetary file system
+- Added IPNS inter planetary name system
+- Added SWARM network
+- Added Radicale
+- Added i2p the invisible internet project
+- Added Lokinet
+- Added Zeronet
+* Fri Apr 17 2026 C0nw0nk <C0nw0nk@github> - 2.9-1
+- Added Feature allow content cache to match any type by using nil or empty string previous behaviour only matched by mime-type.
+- Added Feature for Hidden services like Tor, Freenet, invisible internet project etc to be controlled via nginx.conf file and to easily have other private internet services added via a Lua table easily that way other services users want to add can do so without needing to modify the scripts code.
+- Added Privacy features / compatibility with other privacy networks other than just .Tor Listed.
+- Added .eth ENS
+- Added Freenet
+- Added IPFS inter planetary file system
+- Added IPNS inter planetary name system
+- Added SWARM network
+- Added Radicale
+- Added i2p the invisible internet project
+- Added Lokinet
+- Added Zeronet
+* Mon Nov 03 2025 C0nw0nk <C0nw0nk@github> - 2.8-1
+- Added feature ability for script settings to be controlled from nginx configuration file nginx.conf or vhosts useful for those who do not want to edit the script but can instead use their vhosts virtual hosts or nginx config files to change settings of the script.
+- https://github.com/C0nw0nk/Nginx-Lua-Anti-DDoS/wiki/Script-Overrides
+- Example: nginx.conf inside the http block
+- http {
+- init_by_lua '
+- localized_global = {} --define global var that script can read
+- localized_global.secret = " enigma" --nginx config now sets secret key and the script will use the secret key from here
+- localized_global.credits = 2 --disable ddos credits
+- ';
+- }
+* Mon Nov 03 2025 C0nw0nk <C0nw0nk@github> - 2.8-1
+- Added feature ability for script settings to be controlled from nginx configuration file nginx.conf or vhosts useful for those who do not want to edit the script but can instead use their vhosts virtual hosts or nginx config files to change settings of the script.
+- https://github.com/C0nw0nk/Nginx-Lua-Anti-DDoS/wiki/Script-Overrides
+- Example: nginx.conf inside the http block
+- http {
+- init_by_lua '
+- localized_global = {} --define global var that script can read
+- localized_global.secret = " enigma" --nginx config now sets secret key and the script will use the secret key from here
+- localized_global.credits = 2 --disable ddos credits
+- ';
+- }
+* Fri Oct 24 2025 C0nw0nk <C0nw0nk@github> - 2.7-1
+- Performance improvement and fixes for Tor .onion checks javascript authentication puzzle now shows and protects backends for Tor users.
+- Added support to detect if Linux, Windows or Mac for custom commands.
+* Wed Oct 08 2025 C0nw0nk <C0nw0nk@github> - 2.6-1
+- Add ability to detect and auto whitelist servers IP address
+* Wed Oct 08 2025 C0nw0nk <C0nw0nk@github> - 2.5-1
+- Add IPv6 Addresses to whitelist for localhost so that nginx setups using IPv6 do not internally ban themselves.
+- Added check if exit status is 444 for close the connection or 204 for no content we do not need to waste time disabling gzip since there is no response to gzip.
+* Sat Sep 20 2025 C0nw0nk <C0nw0nk@github> - 2.4-1
+- Range filter will now work with content-type fix set to false.
+* Sat Sep 20 2025 C0nw0nk <C0nw0nk@github> - 2.3-1
+- GET content-type function ability to toggle on / off via true / false statement
+- Default content-type function to true so users can turn it off if they need to
+* Sat Sep 20 2025 C0nw0nk <C0nw0nk@github> - 2.3-1
+- GET content-type function ability to toggle on / off via true / false statement
+- Default content-type function to true so users can turn it off if they need to
+* Sat Sep 13 2025 C0nw0nk <C0nw0nk@github> - 2.2-1
+- String.find is faster than string match so use string.find where possible
+- Improve speed of wildcard matches by not using string.find or string.match and using a custom function
+- Performance improvement with logs
+- Make sure users set custom commands get run on blocks
+* Sat Sep 13 2025 C0nw0nk <C0nw0nk@github> - 2.2-1
+- String.find is faster than string match so use string.find where possible
+- Improve speed of wildcard matches by not using string.find or string.match and using a custom function
+- Performance improvement with logs
+- Make sure users set custom commands get run on blocks
+* Sat Sep 13 2025 C0nw0nk <C0nw0nk@github> - 2.2-1
+- String.find is faster than string match so use string.find where possible
+- Improve speed of wildcard matches by not using string.find or string.match and using a custom function
+- Performance improvement with logs
+- Make sure users set custom commands get run on blocks
+* Sat Sep 13 2025 C0nw0nk <C0nw0nk@github> - 2.2-1
+- String.find is faster than string match so use string.find where possible
+- Improve speed of wildcard matches by not using string.find or string.match and using a custom function
+- Performance improvement with logs
+- Make sure users set custom commands get run on blocks
+* Sat Sep 13 2025 C0nw0nk <C0nw0nk@github> - 2.2-1
+- String.find is faster than string match so use string.find where possible
+- Improve speed of wildcard matches by not using string.find or string.match and using a custom function
+- Performance improvement with logs
+- Make sure users set custom commands get run on blocks
+* Sat Sep 13 2025 C0nw0nk <C0nw0nk@github> - 2.2-1
+- String.find is faster than string match so use string.find where possible
+- Improve speed of wildcard matches by not using string.find or string.match and using a custom function
+- Performance improvement with logs
+- Make sure users set custom commands get run on blocks
+* Sat Sep 13 2025 C0nw0nk <C0nw0nk@github> - 2.2-1
+- String.find is faster than string match so use string.find where possible
+- Improve speed of wildcard matches by not using string.find or string.match and using a custom function
+- Performance improvement with logs
+- Make sure users set custom commands get run on blocks
+* Sat Sep 13 2025 C0nw0nk <C0nw0nk@github> - 2.2-1
+- String.find is faster than string match so use string.find where possible
+- Improve speed of wildcard matches by not using string.find or string.match and using a custom function
+- Performance improvement with logs
+- Make sure users set custom commands get run on blocks
+* Sat Sep 13 2025 C0nw0nk <C0nw0nk@github> - 2.2-1
+- String.find is faster than string match so use string.find where possible
+- Improve speed of wildcard matches by not using string.find or string.match and using a custom function
+- Performance improvement with logs
+- Make sure users set custom commands get run on blocks
+* Sat Sep 13 2025 C0nw0nk <C0nw0nk@github> - 2.2-1
+- String.find is faster than string match so use string.find where possible
+- Improve speed of wildcard matches by not using string.find or string.match and using a custom function
+- Performance improvement with logs
+- Make sure users set custom commands get run on blocks
+* Sat Sep 13 2025 C0nw0nk <C0nw0nk@github> - 2.2-1
+- String.find is faster than string match so use string.find where possible
+- Improve speed of wildcard matches by not using string.find or string.match and using a custom function
+- Performance improvement with logs
+- Make sure users set custom commands get run on blocks
+* Sat Sep 13 2025 C0nw0nk <C0nw0nk@github> - 2.2-1
+- String.find is faster than string match so use string.find where possible
+- Improve speed of wildcard matches by not using string.find or string.match and using a custom function
+- Performance improvement with logs
+- Make sure users set custom commands get run on blocks
+* Sat Sep 13 2025 C0nw0nk <C0nw0nk@github> - 2.2-1
+- String.find is faster than string match so use string.find where possible
+- Improve speed of wildcard matches by not using string.find or string.match and using a custom function
+- Performance improvement with logs
+- Make sure users set custom commands get run on blocks
+* Sat Sep 13 2025 C0nw0nk <C0nw0nk@github> - 2.2-1
+- String.find is faster than string match so use string.find where possible
+- Improve speed of wildcard matches by not using string.find or string.match and using a custom function
+- Performance improvement with logs
+- Make sure users set custom commands get run on blocks
+* Sat Sep 13 2025 C0nw0nk <C0nw0nk@github> - 2.2-1
+- String.find is faster than string match so use string.find where possible
+- Improve speed of wildcard matches by not using string.find or string.match and using a custom function
+- Performance improvement with logs
+- Make sure users set custom commands get run on blocks
+* Sat Sep 13 2025 C0nw0nk <C0nw0nk@github> - 2.2-1
+- String.find is faster than string match so use string.find where possible
+- Improve speed of wildcard matches by not using string.find or string.match and using a custom function
+- Performance improvement with logs
+- Make sure users set custom commands get run on blocks
+* Sat Sep 13 2025 C0nw0nk <C0nw0nk@github> - 2.2-1
+- String.find is faster than string match so use string.find where possible
+- Improve speed of wildcard matches by not using string.find or string.match and using a custom function
+- Performance improvement with logs
+- Make sure users set custom commands get run on blocks
+* Sat Sep 13 2025 C0nw0nk <C0nw0nk@github> - 2.2-1
+- String.find is faster than string match so use string.find where possible
+- Improve speed of wildcard matches by not using string.find or string.match and using a custom function
+- Performance improvement with logs
+- Make sure users set custom commands get run on blocks
+* Fri Sep 12 2025 C0nw0nk <C0nw0nk@github> - 2.1-1
+- Fix for users seeing javascript authentication puzzle i forgot to null out a line when doing tests.
+- Added a check on default secret key or password just incase a user has not changed it from default
+* Fri Sep 12 2025 C0nw0nk <C0nw0nk@github> - 2.1-1
+- Fix for users seeing javascript authentication puzzle i forgot to null out a line when doing tests.
+- Added a check on default secret key or password just incase a user has not changed it from default
+* Thu Sep 11 2025 C0nw0nk <C0nw0nk@github> - 2.0-1
+- Remove dependancy for ngx.re.gsub tests come back string.gsub is fast enough and performs better overall.
+- Improved cache logs to make more readable/understandable
+- Added extra details to Range, WAF and blocking logs
+- Remove un-needed custom command checks
+- Fix incase user does not want to use shared memory zones the function to obtain users real ip was not present added.
+* Wed Sep 10 2025 C0nw0nk <C0nw0nk@github> - 1.9-1
+- Move Internal headers to a function
+- Do IP blocked/banned checks before anything else no point generating headers if IP has been blocked for flooding
+- Nil vars checks incase user changes a empty table var to a empty string.
+- Fix for tor users authorization box / login box.
+- Extend ban duration on IP's flooding whats the point in letting them access the site on expired time if they are still flooding
+* Wed Sep 10 2025 C0nw0nk <C0nw0nk@github> - 1.8-1
+- Fix for internal header not matching strip out unwanted chars of encrypted header that caused this bug
+* Wed Sep 10 2025 C0nw0nk <C0nw0nk@github> - 1.8-1
+- Fix for internal header not matching strip out unwanted chars of encrypted header that caused this bug
+* Tue Sep 09 2025 C0nw0nk <C0nw0nk@github> - 1.7-1
+- Added Security feature to prevent spoofing on the Proxy headers CF-Connecting-IP or X-forwarded-for.
+- For example a smart DDoS attack will send a fake CF-Connecting-IP header or X-Forwarded-For header in their request
+- They do this to see if your server will use their real ip or the fake header they provide to you most servers do not even check this I do :)
+- Example : `curl.exe "http://localhost/" -H "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8" -H "Accept-Language: en-GB,en;q=0.5" -H "Accept-Encoding: gzip, deflate, br, zstd" -H "DNT: 1" -H "Connection: keep-alive" -H "Cookie: name1=1; name2=2; logged_in=1" -H "Upgrade-Insecure-Requests: 1" -H "Sec-Fetch-Dest: document" -H "Sec-Fetch-Mode: navigate" -H "Sec-Fetch-Site: none" -H "Sec-Fetch-User: ?1" -H "Priority: u=0, i" -H "Pragma: no-cache" -H "Cache-Control: no-cache" -H "User-Agent:testagent1" -H "CF-Connecting-IP: 1" -H "X-Forwarded-For: 1" `
+- Improvements for Tor / Onion network users script should now detect Tor automatically no need to change any settings.
+- Improve Page Caching cookie matching
+- Internal request header tracking encrypted so only the nginx process can use these headers
+- localize and and re-order some vars and functions for better performance and execution ordering
+* Sun Sep 07 2025 C0nw0nk <C0nw0nk@github> - 1.6-1
+- Added Feature localized.ip_whitelist_bypass_flood_protection = 0 --0 IP's in whitelist can still be banned / blocked for DDoS flooding behaviour 1 IP's bypass the flood detection
+- Fixed Rate limit being double
+- Tidy IP checks by using a function
+- Increase default minimum request size from 20 bytes to 40 bytes
+- Improve the default User-Agent block string for empty user-agent to pick up spaces as empty also
+- Better setting for shared memory zones
+- Add crawler IP's google bing to whitelist example
+- Fix for cloudflare and proxys solving javascript puzzle make sure they don't override the 503 status and send their own custom error page.
+* Sun Sep 07 2025 C0nw0nk <C0nw0nk@github> - 1.6-1
+- Added Feature localized.ip_whitelist_bypass_flood_protection = 0 --0 IP's in whitelist can still be banned / blocked for DDoS flooding behaviour 1 IP's bypass the flood detection
+- Fixed Rate limit being double
+- Tidy IP checks by using a function
+- Increase default minimum request size from 20 bytes to 40 bytes
+- Improve the default User-Agent block string for empty user-agent to pick up spaces as empty also
+- Better setting for shared memory zones
+- Add crawler IP's google bing to whitelist example
+- Fix for cloudflare and proxys solving javascript puzzle make sure they don't override the 503 status and send their own custom error page.
+* Fri Sep 05 2025 C0nw0nk <C0nw0nk@github> - 1.5-1
+- Fixed log to show IP address.
+- IPs in the block range to get added to shared memory zone if exist
+- IPs in whitelist range to get added to shared memory zone if exist
+- Added Feature javascript authentication puzzle protection users who fail to solve the javascript puzzle more than a certain number of times can be blocked.
+- Added feature ability to run external commands on IP addresses in the block list useful if you want to use iptables to block an address before it even reaches the nginx worker process.
+* Fri Sep 05 2025 C0nw0nk <C0nw0nk@github> - 1.5-1
+- Fixed log to show IP address.
+- IPs in the block range to get added to shared memory zone if exist
+- IPs in whitelist range to get added to shared memory zone if exist
+- Added Feature javascript authentication puzzle protection users who fail to solve the javascript puzzle more than a certain number of times can be blocked.
+- Added feature ability to run external commands on IP addresses in the block list useful if you want to use iptables to block an address before it even reaches the nginx worker process.
+* Wed Sep 03 2025 C0nw0nk <C0nw0nk@github> - 1.4-1
+- localize next functions
+- Add ability to override ngx.location.capture headers being sent to backends.
+* Wed Sep 03 2025 C0nw0nk <C0nw0nk@github> - 1.4-1
+- localize next functions
+- Add ability to override ngx.location.capture headers being sent to backends.
+* Wed Sep 03 2025 C0nw0nk <C0nw0nk@github> - 1.3-1
+- localize vars so the script is compatible with all nginx lua versions old and new.
+- Fix content-type header depending on how early in execution process we are with nginx the content-type header could still be nil so i have fixed it.
+* Wed Sep 03 2025 C0nw0nk <C0nw0nk@github> - 1.3-1
+- localize vars so the script is compatible with all nginx lua versions old and new.
+- Fix content-type header depending on how early in execution process we are with nginx the content-type header could still be nil so i have fixed it.
+* Sat Aug 23 2025 C0nw0nk <C0nw0nk@github> - 1.2-1
+- Fixed both guest and logged in user cache
+- Fixed POST request caching
+- Change default value to false in-case other scripts are present on the Nginx server to be executed after this script.
+- Improved content cache key so it works with other request types like POST etc
+* Sat Aug 23 2025 C0nw0nk <C0nw0nk@github> - 1.2-1
+- Fixed both guest and logged in user cache
+- Fixed POST request caching
+- Change default value to false in-case other scripts are present on the Nginx server to be executed after this script.
+- Improved content cache key so it works with other request types like POST etc
+* Wed Aug 20 2025 C0nw0nk <C0nw0nk@github> - 1.1-1
+- Added Feature Content-Type Caching using ngx.location.capture
+- This is the same as `proxy_cache` or `fastcgi_cache` in nginx just more features and better.
+- Added Feature HTML modification / Modify you can capture and modify pages outputs with this includding adding javascript to pages etc.
+- Added Feature option for users who have other scripts on their nginx server to be able to run those after this. `ngx_exit` trigger.
+- Fixed the shdict check i left it as a string `tostring` and a true or false check was not working properly.
+* Sat Aug 09 2025 C0nw0nk <C0nw0nk@github> - 1.0-1
+- Initial packaging (RPM and DEB) for anti_ddos_challenge.lua created and maintained by C0nw0nk (https://github.com/C0nw0nk)
+* Sat Aug 09 2025 C0nw0nk <C0nw0nk@github> - 1.0-1
+- Initial packaging (RPM and DEB) for anti_ddos_challenge.lua created and maintained by C0nw0nk (https://github.com/C0nw0nk)
+* Sat Aug 09 2025 C0nw0nk <C0nw0nk@github> - 1.0-1
+- Initial packaging (RPM and DEB) for anti_ddos_challenge.lua created and maintained by C0nw0nk (https://github.com/C0nw0nk)
