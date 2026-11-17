@@ -55,7 +55,8 @@ localized_global.user_agent_whitelist_table = {
 -- [[...]] strings keep regex backslashes literal.
 
 -- Upstream matches these case-insensitively and unanchored against the raw request path, before nginx decodes or normalizes it.
--- A percent-encoded path such as /%2eenv slips past them, so files nginx serves itself also need a deny in the site's location rules.
+-- nginx and Tomcat decode %XX before they pick a file, so waf-ban.lua matches these rules again in the rewrite phase against $uri, the path after nginx decodes it and resolves "..".
+-- So /%2eenv and shell%2ephp are blocked too, and \.\./ only ever matches the raw path, where ".." is not resolved yet.
 localized_global.WAF_URI_Request_table = {
 	{
 		"^.*$",
@@ -191,6 +192,7 @@ localized_global.WAF_URI_Request_table = {
 -- Upstream decodes each query value and matches it against ^(?i)<pattern>$, so every pattern spans the whole value from (?s).* to .*.
 -- (?s) lets "." cross a decoded %0A, which would otherwise stop the match and let the payload through.
 -- Upstream also turns each space in a pattern into [ +%20]*, so patterns use \s instead.
+-- Upstream uses an argument name only to pick rules, so waf-ban.lua also matches each name against these rules and answers a hit with 403; ?x'+union+select+1-- has no value at all.
 -- The SQLi rules cover MySQL (SLiMS, WordPress) and PostgreSQL or Oracle (DSpace); POST and JSON bodies stay unchecked, see the POST table.
 localized_global.WAF_query_string_Request_table = {
 	-- SQLi, UNION-based. "select" must be a whole word, so catalogue searches such as "trade union selection" pass.
@@ -344,7 +346,26 @@ localized_global.WAF_Header_Request_table = {
 }
 
 -- Any rule here makes upstream read every POST body, uploads included, into a Lua string, so the filter stays off.
+-- waf-ban.lua checks bodies instead, with the settings below.
 localized_global.WAF_POST_Request_table = {}
+
+-- waf-ban.lua checks request bodies in the rewrite phase with WAF_query_string_Request_table; upstream never reads these two settings.
+-- It checks each urlencoded field, each multipart field without a filename= parameter (PHP's test for a file), and a JSON body as one text after it decodes \uXXXX escapes, because no JSON library is built in.
+-- It reads up to 128 KB, where every query rule stays clear of the PCRE match limit even without PCRE JIT; 1 MB values hit that limit.
+-- A larger urlencoded or JSON body, or one with more than 1000 fields, gets 413, which never counts toward a ban; a larger multipart body is an upload and stays unchecked.
+-- false only logs "Would block (log only) Request body prohibited" for 7 days of tuning; true answers a hit with 403, which counts toward a ban.
+localized_global.WAF_body_block = false
+-- Lua patterns for $uri, the decoded path, whose bodies stay unchecked, because editors save posts there and HTML or SQL words are normal content.
+-- The WordPress classic and block editors, anchored at the site root so that no path info or subdirectory can borrow the exemption; a WordPress in a subdirectory needs its own entries.
+localized_global.WAF_body_skip = {
+	"^/wp%-admin/post%.php$",
+	"^/wp%-json/wp/v2/",
+}
+
+-- waf-ban.lua also checks each Cookie value, URL-decoded as PHP decodes it, with WAF_query_string_Request_table; upstream never reads this setting.
+-- Cookies carry tokens, base64, and JSON, and a JSON cookie such as {"color":"#ffffff"} already matches the SQLi comment rule, so false only logs "Would block (log only) Request cookie prohibited" for 7 days of tuning, like the body check.
+-- true answers a hit with 403, which counts toward a ban.
+localized_global.WAF_cookie_block = false
 
 -- Upstream's default anti_ddos_table closes the connection and bans the address for 24 hours on PATCH, PUT, DELETE, CONNECT, OPTIONS, or TRACE.
 -- Readers send OPTIONS too: Microsoft Office and some browsers ask with OPTIONS before they open a bitstream link, so OPTIONS leaves that list and reaches the application again.
