@@ -134,8 +134,19 @@ The rules check the request path, each decoded query value, and some header valu
 | ASP, JSP, and ERB code injection                    | Query values                                                       |
 | Sensitive files and admin paths                     | Path                                                               |
 
-The rules do not check POST bodies, so payloads in forms, JSON, and uploads reach the application.
-Upstream reads the whole body of each POST request into memory when a POST rule exists, uploads included.
+The path rules check the path twice: as the client sent it, and after nginx decodes `%XX` and resolves `..`.
+So `/xmlrpc%2ephp` gets `403` like `/xmlrpc.php`, because nginx and Tomcat decode the path before they pick a file.
+
+`waf-ban.lua` also checks the name of each query argument with the query value rules, because upstream checks only the values; a hit gets `403`.
+It checks each cookie value too, after it decodes it as PHP does.
+With `WAF_cookie_block = false`, the cookie check only writes `Would block (log only)` lines, because cookies often carry JSON or tokens.
+`waf-ban.lua` also checks request bodies with the query value rules: each urlencoded field, each multipart field that is not a file, and a JSON body as one text.
+It reads bodies up to 128 KB.
+A larger urlencoded or JSON body, or one with more than 1000 fields, gets `413`; a larger multipart body is an upload, and it is not checked.
+With `WAF_body_block = false`, the body check only writes `Would block (log only)` lines to the error log.
+Set it to `true` after a week without false positives; then a hit gets `403` and counts toward a ban.
+`WAF_body_skip` lists the paths whose bodies are not checked, such as the WordPress editors, where HTML and SQL words are normal content.
+Upstream's own POST table stays empty, because upstream reads the whole body of each POST request into memory when a POST rule exists, uploads included.
 The rules do not check uploaded files.
 Instead, a request for a script in an upload directory (`wp-content/uploads`, `/files`, `/repository`) gets `403`, so an uploaded webshell cannot run.
 The script extensions are `php` (also `php5` and similar), `phtml`, `phar`, `jsp`, `jspx`, `asp`, `aspx`, `cgi`, `pl`, and `sh`, also in double extensions such as `shell.php.jpg`.
