@@ -2,4 +2,6 @@
 .codegraph/
 .env
 
+docs/
+
 note.txt
