@@ -44,6 +44,12 @@ local function request(ip, opts)
 				clear_header = function(h)
 					cleared = cleared or h == "X-Forwarded-For"
 				end,
+				get_uri_args = function()
+					return {}, opts.truncated == "args" and "truncated" or nil
+				end,
+				get_headers = function()
+					return {}, opts.truncated == "headers" and "truncated" or nil
+				end,
 			},
 			ctx = ctx,
 			status = status,
@@ -183,6 +189,14 @@ check(
 	request("203.0.113.33", { ua = "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)" }) == 200,
 	"Googlebot is no AI agent"
 )
+
+for _, kind in ipairs({ "args", "headers" }) do
+	check(request("203.0.113.50", { truncated = kind }) == 403, "more than 100 " .. kind .. " must get 403")
+end
+for _ = 1, 10 do
+	request("203.0.113.51", { truncated = "args" })
+end
+check(request("203.0.113.51") == 200, "403 for more than 100 args or headers must not count toward a ban")
 
 if failed > 0 then
 	os.exit(1)
