@@ -117,6 +117,33 @@ Thus the WAF is active on all sites and paths immediately after the install. You
 
 To turn off the WAF for one `location`, add `access_by_lua_block { return }` to it. This handler replaces the handler from the `http` block.
 
+### WAF rules
+
+`config/waf-local-overrides.lua` contains the rules. A request that matches a rule gets `403`.
+The rules check the request path, each decoded query value, and some header values:
+
+| Attack                                              | Checked in                                                         |
+| --------------------------------------------------- | ------------------------------------------------------------------ |
+| SQL injection                                       | Query values, `Cookie`, `Referer`, `User-Agent`, `X-Forwarded-For` |
+| XSS                                                 | Query values, `Cookie`, `Referer`, `User-Agent`                    |
+| Command injection                                   | Query values, and Shellshock in all headers                        |
+| File inclusion and path traversal                   | Path, query values                                                 |
+| SSRF                                                | Query values                                                       |
+| Java code injection (Log4Shell) and deserialization | Query values, all headers                                          |
+| PHP code injection and object injection             | Query values, and object injection in `Cookie`                     |
+| ASP, JSP, and ERB code injection                    | Query values                                                       |
+| Sensitive files and admin paths                     | Path                                                               |
+
+The rules do not check POST bodies, so payloads in forms, JSON, and uploads reach the application.
+Upstream reads the whole body of each POST request into memory when a POST rule exists, uploads included.
+The rules do not check uploaded files.
+Instead, a request for a script in an upload directory (`wp-content/uploads`, `/files`, `/repository`) gets `403`, so an uploaded webshell cannot run.
+The script extensions are `php` (also `php5` and similar), `phtml`, `phar`, `jsp`, `jspx`, `asp`, `aspx`, `cgi`, `pl`, and `sh`, also in double extensions such as `shell.php.jpg`.
+CSRF checks need the `Origin` header, so the rules do not cover CSRF.
+
+Upstream checks only the first 100 query arguments and the first 100 headers.
+`waf-ban.lua` rejects a request with more query arguments or more headers with `403`, and this `403` does not count toward a ban.
+
 ### Bans
 
 A ban rejects all requests from one client address for a time.

@@ -49,6 +49,8 @@ Real nginx behaviour (Lua runtime, SELinux, systemd) is only observable on a tar
 - Upstream reads `localized_global.*` set by `init_by_lua_file`, and each table in `config/waf-local-overrides.lua` replaces the upstream default table wholesale.
 - Before editing an entry in `config/waf-local-overrides.lua` or `config/nginx-waf.conf`, read the comment above it: it records how upstream treats that entry (rule syntax, challenge bypass, User-Agent lists, the empty POST table, bans).
 - Every rule and bypass entry needs a case in `tests/test-rules.lua`, which mirrors upstream's compilation and runs the regexes through Perl.
+- Upstream wraps each query value pattern as `^(?i)<pattern>$`, so a top-level `|` breaks the anchors and alternatives need a group.
+  A rule must also stay linear, because upstream treats a regex error, such as the PCRE match limit on a long value, as no match.
 - Upstream bans live in shared dicts, which survive a reload; only a restart clears them.
 
 ## Gotchas
@@ -60,6 +62,8 @@ Real nginx behaviour (Lua runtime, SELinux, systemd) is only observable on a tar
 - `config/nginx-waf.conf` carries WAF directives only and turns the WAF on for every site with `access_by_lua_file` in the `http` block.
   `lua_package_path` and `load_module` belong to the main config (`load_lua_module`) or the distro's module setup, and a second copy fails `nginx -t` on duplicates.
 - `config/waf-ban.lua` runs as both `rewrite_by_lua_file` and `log_by_lua_file`, branched on `ngx.get_phase()`, because nginx allows one `rewrite_by_lua*` per context.
+- Upstream parses only the first 100 query arguments and headers (the `ngx.req` defaults), so the rewrite phase of `waf-ban.lua` answers 403, uncounted, when either comes back `truncated`.
+- Upstream's default `content_type_fix = true` resends every allowed request to the backend as a HEAD subrequest, which doubled Tomcat's page renders on DSpace, so the overrides set it to false.
 - Policy: crawlers, scrapers, AI agents, and Turnitin are allowed with strict limits, and only attack payloads lead to a ban.
   Every 403 from the access phase counts toward the `waf-ban.lua` ban, so `user_agent_blacklist_table` is empty: upstream's other 403 sources are the WAF rule tables and Tor blocking (`.onion` only).
   The log phase never counts a User-Agent matching `AI_AGENTS` or `CRAWLERS` (`bot`, `crawl`, `spider`, `slurp`, `turnitin`, `facebookexternalhit`), because crawlers follow links with payloads planted elsewhere; generic clients such as `curl` still get banned for payloads.
