@@ -10,6 +10,7 @@ shellcheck -x scripts/*.sh scripts/lib/*.sh tests/*.sh		# lint, kept at zero fin
 bash tests/test-scripts.sh									# whole suite, prints PASS
 lua tests/test-rules.lua									# local WAF rules against sample requests, prints PASS
 lua tests/test-ban.lua										# config/waf-ban.lua against a stub ngx, prints PASS
+lua tests/test-stats.lua									# config/waf-stats.lua against a stub ngx, prints PASS
 ```
 
 `tests/test-scripts.sh` runs one sequential scenario per platform, then one for `deploy.sh`, and stops at the first `FAIL [platform]: ...`.

@@ -20,6 +20,7 @@ Ubuntu 24.04 no longer has the `libnginx-mod-http-lua` package, so this build al
 | `config/nginx-waf.conf`                    | `http` block snippet that turns on the WAF for all sites                |
 | `config/waf-local-overrides.lua`           | Local secret and WAF rules                                              |
 | `config/waf-ban.lua`                       | Bans addresses after repeated WAF rule hits                             |
+| `config/waf-stats.lua`                     | WAF stats as JSON on `http://127.0.0.1:9180/ddos_stats`                 |
 | `scripts/deploy.sh`                        | Copies the repo files to a server over ssh, then installs or updates    |
 | `scripts/install-deb.sh`, `install-rpm.sh` | First install: makes the server secret, then runs the update script     |
 | `scripts/update-deb.sh`, `update-rpm.sh`   | Update: builds the Lua module if necessary, then installs the WAF files |
@@ -143,6 +144,33 @@ Microsoft Office and some browsers send `OPTIONS` before they open a document li
 
 Upstream and `waf-ban.lua` keep their bans in nginx shared memory. A reload keeps the bans. Only a restart of nginx removes them.
 
+### Stats
+
+`waf-stats.lua` shows the WAF counters as JSON. It is an adapted version of the example in the upstream wiki page [Anti-DDoS Stats and Metrics](https://github.com/C0nw0nk/Nginx-Lua-Anti-DDoS/wiki/Anti%E2%80%90DDoS-Stats-and-Metrics).
+`config/nginx-waf.conf` serves it only on the loopback address, because the output lists client addresses:
+
+```bash
+ssh <server> 'curl -s http://127.0.0.1:9180/ddos_stats' | jq
+```
+
+Port 9180 is far from the DSpace ports (8080, 8787, 5432, and 19123).
+The WAF does not run on this request, so the request does not change the stats.
+
+| Field                   | Meaning                                                                     |
+| ----------------------- | --------------------------------------------------------------------------- |
+| `total_traffic_allowed` | Requests in the current upstream rate limit window, not since nginx started |
+| `total_traffic_blocked` | Blocked requests in the current rate limit window                           |
+| `requests_blocked`      | Addresses that upstream blocked in the current block duration               |
+| `requests_per_ip`       | Requests of each active address in the current rate limit window            |
+| `js_puzzle_per_ip`      | Failed JavaScript challenges of each address                                |
+| `blocked_ips_ttl`       | Seconds until the upstream ban of each address ends                         |
+| `waf_bans`              | Addresses that `waf-ban.lua` bans now                                       |
+| `keys_listed`           | Keys read from the `antiddos` shared dict, at most 10,000                   |
+
+The 10,000 limit is necessary because nginx locks the shared dict while it lists the keys, and the WAF waits for that lock.
+The endpoint makes the JSON itself, because the Lua module that `build_lua_module` builds has no `cjson` library.
+The counters are in shared memory, so a restart of nginx sets them to zero.
+
 ### JavaScript challenge
 
 The JavaScript challenge is automatic. Upstream turns on the challenge for all paths when it bans more than 100 addresses.
@@ -221,6 +249,7 @@ shellcheck -x scripts/*.sh scripts/lib/*.sh tests/*.sh
 bash tests/test-scripts.sh
 lua tests/test-rules.lua
 lua tests/test-ban.lua
+lua tests/test-stats.lua
 ```
 
 ## Credits
