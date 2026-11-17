@@ -11,6 +11,7 @@ bash tests/test-scripts.sh									# whole suite, prints PASS
 lua tests/test-rules.lua									# local WAF rules against sample requests, prints PASS
 lua tests/test-ban.lua										# config/waf-ban.lua against a stub ngx, prints PASS
 lua tests/test-stats.lua									# config/waf-stats.lua against a stub ngx, prints PASS
+python3 -I tests/test-linear.py							# every WAF rule against adversarial 8 KB and 128 KB input in PCRE2, prints PASS
 ```
 
 `tests/test-scripts.sh` runs one sequential scenario per platform, then one for `deploy.sh`, and stops at the first `FAIL [platform]: ...`.
@@ -51,6 +52,7 @@ Real nginx behaviour (Lua runtime, SELinux, systemd) is only observable on a tar
 - Every rule and bypass entry needs a case in `tests/test-rules.lua`, which mirrors upstream's compilation and runs the regexes through Perl.
 - Upstream wraps each query value pattern as `^(?i)<pattern>$`, so a top-level `|` breaks the anchors and alternatives need a group.
   A rule must also stay linear, because upstream treats a regex error, such as the PCRE match limit on a long value, as no match.
+  `tests/test-linear.py` checks it, query rules at 128 KB, because `waf-ban.lua` also runs them on body fields.
 - Upstream bans live in shared dicts, which survive a reload; only a restart clears them.
 
 ## Gotchas
@@ -72,3 +74,5 @@ Real nginx behaviour (Lua runtime, SELinux, systemd) is only observable on a tar
   Every 403 from the access phase or the rewrite-phase rule checks counts toward the `waf-ban.lua` ban, so `user_agent_blacklist_table` is empty: upstream's other 403 sources are the WAF rule tables and Tor blocking (`.onion` only).
   The log phase never counts a User-Agent matching `AI_AGENTS` or `CRAWLERS` (`bot`, `crawl`, `spider`, `slurp`, `turnitin`, `facebookexternalhit`), because crawlers follow links with payloads planted elsewhere; generic clients such as `curl` still get banned for payloads.
   The rewrite phase gives each `AI_AGENTS` family (plain lowercase substrings of the User-Agent) one shared budget across all addresses, `AI_LIMIT` per `AI_WINDOW`, and answers the excess with 429, which the ban ignores.
+- The `waf_login` zone in `config/nginx-waf.conf` is opt-in per site with `limit_req zone=waf_login burst=5 nodelay;`, because a `limit_req` in `http` would also reach unrelated servers such as DSpace's 19123 proxy.
+  It sets no `limit_req_status`, because DSpace sets one in `http` and a duplicate fails `nginx -t`, and DSpace's login locations, which have their own `limit_req`, do not inherit it.
