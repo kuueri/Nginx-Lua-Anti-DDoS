@@ -255,6 +255,13 @@ localized_global.WAF_query_string_Request_table = {
 		"^.*$",
 		[[(?s).*\.\./.*]],
 	},
+	-- Local file inclusion by absolute path, because include() and file_get_contents() open /etc/passwd without any ../.
+	-- The list holds the OS files that CRS rule 930120 (lfi-os-files.data) sees probed most.
+	-- (?![a-z]) lets "etc/passwords" pass.
+	{
+		"^.*$",
+		[[(?s)(?:(?:.*/)?etc/(?:passwd|shadow|group|hosts)(?![a-z])|.*(?:/proc/self/|win\.ini|boot\.ini)).*]],
+	},
 	-- Log4Shell (CVE-2021-44228, Log4j 2.x): ${jndi:...} and obfuscated ${...:...} lookups
 	-- A ${...} without ":" before its "}" is skipped whole and possessively, which suffices because a ${ nested inside it has no ":" before that "}" either.
 	-- So the scan stays linear without a length cap that a long key, as in ${${aaa...:-j}ndi:...}, could outrun; the earlier .*\$\{[^}]*: form spent 10 s of PCRE JIT time on 8 KB of "${:".
