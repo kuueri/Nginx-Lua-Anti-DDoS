@@ -152,6 +152,10 @@ Instead, a request for a script in an upload directory (`wp-content/uploads`, `/
 The script extensions are `php` (also `php5` and similar), `phtml`, `phar`, `jsp`, `jspx`, `asp`, `aspx`, `cgi`, `pl`, and `sh`, also in double extensions such as `shell.php.jpg`.
 CSRF checks need the `Origin` header, so the rules do not cover CSRF.
 
+`config/nginx-waf.conf` defines the `waf_login` rate-limit zone, 10 login POSTs per minute per address, but no site uses it until it adds `limit_req zone=waf_login burst=5 nodelay;` to its `server` block or its login `location`.
+The zone covers POSTs to `wp-login.php`, `index.php` (the SLiMS logins, but not under `admin/` or `wp-admin/`), DSpace's `password-login`, `rest/login`, and `server/api/authn/login`, each at the site root or one directory below it.
+The limit answers `429` when the server sets `limit_req_status 429`, otherwise `503`, and neither counts toward a ban.
+
 Upstream checks only the first 100 query arguments and the first 100 headers.
 `waf-ban.lua` rejects a request with more query arguments or more headers with `403`, and this `403` does not count toward a ban.
 
