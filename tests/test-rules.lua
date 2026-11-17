@@ -37,7 +37,7 @@ for _, r in ipairs(g.user_agent_whitelist_table) do
 	local val = (mode == 1 or mode == 4) and "((?i)" .. r[1]:lower() .. ")" or "(" .. r[1] .. ")"
 	table.insert(rules.ua, { src = r[1], val = val })
 end
--- The blacklist compiles the same way, and "block" means a 403 on every path.
+-- The blacklist compiles the same way, and "block" means a 403 on every path; the list is empty, so every case must pass.
 rules.uablock = {}
 for _, r in ipairs(g.user_agent_blacklist_table) do
 	local mode = r[2] or 1
@@ -199,29 +199,39 @@ local cases = {
 	{ false, "ua", "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com.evil.example/bot.html)" },
 	{ true, "ua", "Turnitin (https://bit.ly/2UvnfoQ)" },
 	{ false, "ua", "Mozilla/5.0 Turnitin (https://bit.ly/2UvnfoQ)" },
-	{ true, "uablock", "" },
-	{ true, "uablock", "Kodi/21.2 (X11; Linux x86_64) Ubuntu/24.04 App_Bitness/64 Version/21.2-(21.2.0)-Git:20250204" },
-	{ true, "uablock", "XBMC/12.0 (Linux)" },
-	{ true, "uablock", "WinHttp-Autoproxy-Service/5.1" },
-	{ true, "uablock", "Mozilla/4.5 (compatible; HTTrack 3.0x; Windows 98)" },
-	{ true, "uablock", "libwww-perl/6.72" },
+	-- No User-Agent is blocked for what it is, because every 403 counts toward a ban, which only attack payloads may cause.
+	{ false, "uablock", "" },
 	{
-		true,
+		false,
+		"uablock",
+		"Kodi/21.2 (X11; Linux x86_64) Ubuntu/24.04 App_Bitness/64 Version/21.2-(21.2.0)-Git:20250204",
+	},
+	{ false, "uablock", "XBMC/12.0 (Linux)" },
+	{ false, "uablock", "WinHttp-Autoproxy-Service/5.1" },
+	{ false, "uablock", "Mozilla/4.5 (compatible; HTTrack 3.0x; Windows 98)" },
+	{ false, "uablock", "libwww-perl/6.72" },
+	{
+		false,
 		"uablock",
 		"Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko); compatible; ChatGPT-User/1.0; +https://openai.com/bot",
 	},
 	{
-		true,
+		false,
 		"uablock",
 		"Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; GPTBot/1.2; +https://openai.com/gptbot)",
 	},
-	{ true, "uablock", "DeepseekBot/1.0" },
+	{ false, "uablock", "DeepseekBot/1.0" },
 	{
-		true,
+		false,
 		"uablock",
 		"Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko); compatible; OAI-SearchBot/1.0; +https://openai.com/searchbot",
 	},
-	{ true, "uablock", "Mozilla/5.0 (compatible) AI2Bot (+https://www.allenai.org/crawler)" },
+	{ false, "uablock", "Mozilla/5.0 (compatible) AI2Bot (+https://www.allenai.org/crawler)" },
+	{
+		false,
+		"uablock",
+		"Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; Claude-User/1.0; +claude-user@anthropic.com)",
+	},
 	{ false, "uablock", "curl/8.5.0" },
 	{ false, "uablock", "python-requests/2.32.3" },
 	{ false, "uablock", "OAI-Harvester/1.0" },

@@ -28,7 +28,7 @@ local dict = {
 -- One request: rewrite phase, then the access-phase status (nil when the rewrite phase already exited), then the log phase.
 local function request(ip, opts)
 	opts = opts or {}
-	local ctx, exited, cleared = {}, nil, false
+	local ctx, exited, cleared, header = {}, nil, false, {}
 	local function env(phase, status)
 		_G.ngx = {
 			shared = { waf_strikes = dict },
@@ -36,7 +36,10 @@ local function request(ip, opts)
 				remote_addr = ip,
 				realip_remote_addr = opts.realip or ip,
 				upstream_status = opts.upstream,
+				http_user_agent = opts.ua,
 			},
+			header = header,
+			HTTP_TOO_MANY_REQUESTS = 429,
 			req = {
 				clear_header = function(h)
 					cleared = cleared or h == "X-Forwarded-For"
@@ -62,7 +65,7 @@ local function request(ip, opts)
 	local status = exited or opts.status or 200
 	env("log", status)
 	dofile(script)
-	return status, cleared
+	return status, cleared, header
 end
 
 local failed = 0
@@ -120,6 +123,66 @@ local _, cleared = request("203.0.113.20", { realip = "192.168.19.7" })
 check(cleared, "X-Forwarded-For must be cleared when realip replaced the address")
 _, cleared = request("203.0.113.21")
 check(not cleared, "X-Forwarded-For must stay when realip did not replace the address")
+
+-- Crawlers, AI agents, and Turnitin are never banned, even when a request carries a payload, e.g. a link planted with SQLi; the 403 itself stays.
+-- A generic HTTP client with payloads is still banned.
+now = now + 3600
+for _, crawler in ipairs({
+	"Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)",
+	"Mozilla/5.0 (compatible; bingbot/2.0; +http://www.bing.com/bingbot.htm)",
+	"Mozilla/5.0 (compatible; Baiduspider/2.0; +http://www.baidu.com/search/spider.html)",
+	"Turnitin (https://bit.ly/2UvnfoQ)",
+	"Mozilla/5.0 (compatible; PlagyBot/1.0)",
+	"Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko); compatible; ChatGPT-User/1.0; +https://openai.com/bot",
+	"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36 (compatible; meta-externalagent/1.1 (+https://developers.facebook.com/docs/sharing/webmasters/crawler))",
+	"facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)",
+	"Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; Claude-User/1.0; +claude-user@anthropic.com)",
+}) do
+	for _ = 1, 10 do
+		request("203.0.113.40", { ua = crawler, status = 403 })
+	end
+	check(request("203.0.113.40", { ua = crawler }) ~= 403, "crawler was banned for payload hits: " .. crawler)
+end
+for _, client in ipairs({ "curl/8.5.0", "python-requests/2.32.3" }) do
+	local addr = client:sub(1, 4) == "curl" and "203.0.113.41" or "203.0.113.42"
+	for _ = 1, 5 do
+		request(addr, { ua = client, status = 403 })
+	end
+	check(request(addr, { ua = client }) == 403, "generic client with 5 payload hits must be banned: " .. client)
+end
+
+-- AI agents share one budget per agent family across all addresses, answered with 429, which never counts toward a ban.
+local chatgpt =
+	"Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko); compatible; ChatGPT-User/1.0; +https://openai.com/bot"
+local claude =
+	"Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; Claude-User/1.0; +claude-user@anthropic.com)"
+local browser = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"
+now = now + 3600
+for i = 1, 10 do
+	check(
+		request("203.0.113.30", { ua = chatgpt }) == 200,
+		"ChatGPT-User request " .. i .. " within the limit was refused"
+	)
+end
+local status, _, header = request("203.0.113.31", { ua = chatgpt })
+check(status == 429, "11th ChatGPT-User request in a minute, from another address, must get 429")
+check(header["Retry-After"] == 60, "429 must carry Retry-After: 60")
+check(request("203.0.113.30", { ua = claude }) == 200, "Claude-User must have its own budget")
+for _ = 2, 10 do
+	request("203.0.113.30", { ua = claude })
+end
+check(request("203.0.113.30", { ua = claude }) == 429, "11th Claude-User request in a minute must get 429")
+check(request("203.0.113.30", { ua = browser }) == 200, "a browser on the same address must not be limited")
+for _ = 1, 20 do
+	request("203.0.113.32", { ua = chatgpt })
+end
+check(request("203.0.113.32", { ua = browser }) == 200, "429 from the AI limit must not count toward a ban")
+now = now + 61
+check(request("203.0.113.31", { ua = chatgpt }) == 200, "the AI limit must reset after a minute")
+check(
+	request("203.0.113.33", { ua = "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)" }) == 200,
+	"Googlebot is no AI agent"
+)
 
 if failed > 0 then
 	os.exit(1)
