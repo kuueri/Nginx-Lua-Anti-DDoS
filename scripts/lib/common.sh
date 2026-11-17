@@ -15,8 +15,9 @@ PLACEHOLDER_SECRET="CHANGE_ME_TO_LONG_RANDOM_SECRET"
 WAF_FILE="etc/nginx/lua/waf.lua"
 OVERRIDES_FILE="etc/nginx/lua/waf-local-overrides.lua"
 BAN_FILE="etc/nginx/lua/waf-ban.lua"
+STATS_FILE="etc/nginx/lua/waf-stats.lua"
 HTTP_CONF="etc/nginx/conf.d/waf.conf"
-FILES=("$WAF_FILE" "$OVERRIDES_FILE" "$BAN_FILE" "$HTTP_CONF")
+FILES=("$WAF_FILE" "$OVERRIDES_FILE" "$BAN_FILE" "$STATS_FILE" "$HTTP_CONF")
 WORK_DIR=""
 
 log() {
@@ -258,6 +259,7 @@ sync_waf() {
 	curl -fsSL "$URL" -o "$stage/$WAF_FILE"
 	cp -- "$CONFIG_DIR/waf-local-overrides.lua" "$stage/$OVERRIDES_FILE"
 	cp -- "$CONFIG_DIR/waf-ban.lua" "$stage/$BAN_FILE"
+	cp -- "$CONFIG_DIR/waf-stats.lua" "$stage/$STATS_FILE"
 	cp -- "$CONFIG_DIR/nginx-waf.conf" "$stage/$HTTP_CONF"
 
 	# The installed secret wins, so visitors' auth cookies survive updates.
@@ -281,7 +283,7 @@ sync_waf() {
 	# The overrides file holds the secret; only the nginx master (root) reads it via init_by_lua_file.
 	chmod 0600 "$stage/$OVERRIDES_FILE"
 	# Workers load waf.lua as the unprivileged nginx user on their first request.
-	chmod 0644 "$stage/$WAF_FILE" "$stage/$BAN_FILE" "$stage/$HTTP_CONF"
+	chmod 0644 "$stage/$WAF_FILE" "$stage/$BAN_FILE" "$stage/$STATS_FILE" "$stage/$HTTP_CONF"
 
 	for f in "${FILES[@]}"; do
 		cmp -s "$stage/$f" "$ROOT/$f" || changed=1
