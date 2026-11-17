@@ -469,6 +469,35 @@ for _, h in ipairs(g.master_switch_custom_hosts) do
 	end
 end
 
+local body_skip_cases = {
+	{ true, "/wp-admin/post.php" },
+	{ true, "/wp-json/wp/v2/posts/12" },
+	{ false, "/wp-admin/admin-ajax.php" },
+	{ false, "/wp-admin/post.php/x" },
+	{ false, "/x/wp-admin/post.php" },
+	{ false, "/wp-json/contact-form-7/v1/contact-forms/5/feedback" },
+}
+local body_skip_used = {}
+for _, c in ipairs(body_skip_cases) do
+	local hit = false
+	for _, p in ipairs(g.WAF_body_skip) do
+		if c[2]:find(p) then
+			hit = true
+			body_skip_used[p] = true
+		end
+	end
+	if hit ~= c[1] then
+		failed = failed + 1
+		print(string.format("FAIL body skip %q: expected %s", c[2], c[1] and "skip" or "check"))
+	end
+end
+for _, p in ipairs(g.WAF_body_skip) do
+	if not body_skip_used[p] then
+		failed = failed + 1
+		print(string.format("FAIL body skip pattern matches no case: %s", p))
+	end
+end
+
 -- Upstream builds its default anti_ddos_table in the worker before it calls the override, so both run here against the real upstream source.
 local upstream = assert(io.open(arg[0]:gsub("[^/]*$", "") .. "../lua/anti_ddos_challenge.lua")):read("a")
 local from = assert(

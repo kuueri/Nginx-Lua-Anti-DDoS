@@ -25,6 +25,22 @@ local dict = {
 	end,
 }
 
+localized_global = {
+	WAF_URI_Request_table = {
+		{ "^.*$", [[/xmlrpc\.php]] },
+		{ [[^https://other\.example/.*$]], "/private/" },
+	},
+	WAF_query_string_Request_table = {
+		{ "^.*$", ".*union.*" },
+		{ "order", ".*;.*" },
+		{ "^.*$", ".*MATCHLIMIT.*" },
+	},
+	WAF_body_block = true,
+	WAF_body_skip = { "^/wp%-admin/post%.php$" },
+	WAF_cookie_block = true,
+}
+local temps = {}
+
 -- One request: rewrite phase, then the access-phase status (nil when the rewrite phase already exited), then the log phase.
 local function request(ip, opts)
 	opts = opts or {}
@@ -37,15 +53,77 @@ local function request(ip, opts)
 				realip_remote_addr = opts.realip or ip,
 				upstream_status = opts.upstream,
 				http_user_agent = opts.ua,
+				scheme = "https",
+				host = opts.host or "example.com",
+				request_uri = opts.raw or opts.uri or "/",
+				uri = opts.uri or "/",
+				content_type = opts.ctype,
+				http_cookie = opts.cookie,
+				content_length = opts.body and not opts.chunked and tostring(#opts.body) or nil,
 			},
+			re = {
+				find = function(s, p)
+					if p:find("MATCHLIMIT", 1, true) and s:find("boom", 1, true) then
+						return nil, nil, "pcre2_match() failed: -47"
+					end
+					return s:lower():find((p:gsub("%(%?i%)", ""):gsub("\\%.", "%%."):lower()))
+				end,
+			},
+			decode_args = function(s, max)
+				local t, n = {}, 0
+				for pair in s:gmatch("[^&]+") do
+					n = n + 1
+					if n > max then
+						break
+					end
+					local k, eq, v = pair:match("^([^=]*)(=?)(.*)$")
+					v = eq == ""
+						or v:gsub("%+", " "):gsub("%%(%x%x)", function(h)
+							return string.char(tonumber(h, 16))
+						end)
+					if t[k] == nil then
+						t[k] = v
+					elseif type(t[k]) == "table" then
+						table.insert(t[k], v)
+					else
+						t[k] = { t[k], v }
+					end
+				end
+				return t
+			end,
+			unescape_uri = function(s)
+				return (
+					s:gsub("%+", " "):gsub("%%(%x%x)", function(h)
+						return string.char(tonumber(h, 16))
+					end)
+				)
+			end,
 			header = header,
 			HTTP_TOO_MANY_REQUESTS = 429,
+			STDERR = 0,
 			req = {
+				is_internal = function()
+					return opts.internal == true
+				end,
+				read_body = function() end,
+				get_body_data = function()
+					return not opts.file and opts.body or nil
+				end,
+				get_body_file = function()
+					if opts.file and opts.body then
+						local path = os.tmpname()
+						local f = assert(io.open(path, "wb"))
+						f:write(opts.body)
+						f:close()
+						table.insert(temps, path)
+						return path
+					end
+				end,
 				clear_header = function(h)
 					cleared = cleared or h == "X-Forwarded-For"
 				end,
 				get_uri_args = function()
-					return {}, opts.truncated == "args" and "truncated" or nil
+					return opts.args or {}, opts.truncated == "args" and "truncated" or nil
 				end,
 				get_headers = function()
 					return {}, opts.truncated == "headers" and "truncated" or nil
@@ -197,6 +275,135 @@ for _ = 1, 10 do
 	request("203.0.113.51", { truncated = "args" })
 end
 check(request("203.0.113.51") == 200, "403 for more than 100 args or headers must not count toward a ban")
+
+local encoded = "203.0.113.60"
+for i = 1, 5 do
+	check(
+		request(encoded, { raw = "/xmlrpc%2ephp", uri = "/xmlrpc.php" }) == 403,
+		"encoded path hit " .. i .. " that only matches after decoding must get 403"
+	)
+end
+check(request(encoded) == 403, "5 hits on the decoded path must ban")
+check(request("203.0.113.61", { uri = "/xmlrpc.html" }) == 200, "a decoded path that matches no rule must pass")
+check(request("203.0.113.61", { uri = "/private/x" }) == 200, "a URI rule for another host must not apply")
+check(
+	request("203.0.113.61", { host = "other.example", uri = "/private/x" }) == 403,
+	"a URI rule for this host must apply"
+)
+
+local form = "application/x-www-form-urlencoded"
+local mp = "multipart/form-data; boundary=XyZ"
+local over = string.rep("a", 131073)
+local n = 0
+local function body(opts)
+	n = n + 1
+	return request("198.51.100." .. n, opts)
+end
+local function part(head, value)
+	return "--XyZ\r\n" .. head .. "\r\n\r\n" .. value .. "\r\n"
+end
+local field_q = 'Content-Disposition: form-data; name="q"'
+check(body({ ctype = form, body = "q=1+union+select+2" }) == 403, "a urlencoded field with a payload must get 403")
+check(body({ ctype = form .. "; charset=UTF-8", body = "q=hello+world" }) == 200, "a clean urlencoded body must pass")
+check(body({ ctype = form, body = "order=title;drop" }) == 403, "a rule for the order field must apply to it")
+check(body({ ctype = form, body = "q=a;b" }) == 200, "a rule for the order field must not apply to other fields")
+check(body({ ctype = form, body = "q=boom" }) == 403, "a regex error must block, not let the body through")
+check(body({ ctype = form, body = string.rep("a=1&", 1001) }) == 413, "more than 1000 fields must get 413")
+check(body({ ctype = form, body = "q=union", file = true }) == 403, "a body buffered to a temp file must be checked")
+check(body({ ctype = form, body = over }) == 413, "a urlencoded body over 128 KB must get 413")
+check(body({ ctype = form, body = over, chunked = true }) == 413, "a chunked body over 128 KB must get 413")
+check(
+	body({ ctype = "application/json", body = '{"q":"un\\u0069on"}' }) == 403,
+	"a JSON body must be checked after its \\u escapes are decoded"
+)
+check(body({ ctype = "application/json", body = '{"q":"hello"}' }) == 200, "a clean JSON body must pass")
+check(
+	body({ ctype = "text/plain", body = "q=union" }) == 200,
+	"a body type that PHP and Tomcat do not parse is not checked"
+)
+check(
+	body({ ctype = mp, body = part(field_q, "1 union select 2") .. "--XyZ--\r\n" }) == 403,
+	"a multipart field with a payload must get 403"
+)
+check(body({
+	ctype = mp,
+	body = part('Content-Disposition: form-data; name="f"; filename="a.sql"\r\nContent-Type: text/plain', "union")
+		.. "--XyZ--\r\n",
+}) == 200, "a multipart file must not be checked")
+check(
+	body({ ctype = mp, body = part(field_q .. '; xfilename="a"', "union") .. "--XyZ--\r\n" }) == 403,
+	"only a filename parameter makes a multipart file, as in PHP"
+)
+check(
+	body({ ctype = mp, body = part(field_q, "union") }) == 403,
+	"a last field without a closing boundary must be checked"
+)
+check(
+	body({ ctype = "multipart/form-data; boundary=Other", body = part(field_q, "union") }) == 403,
+	"a multipart body whose boundary matches no part must be checked whole"
+)
+check(body({ ctype = mp, body = over }) == 200, "a multipart body over 128 KB is an upload and must pass unchecked")
+check(
+	body({ ctype = form, body = "q=union", uri = "/wp-admin/post.php" }) == 200,
+	"a body on a skipped path must not be checked"
+)
+check(
+	body({ ctype = form, body = "q=union", internal = true }) == 200,
+	"an internal redirect must not check the body again"
+)
+localized_global.WAF_body_block = false
+check(body({ ctype = form, body = "q=union" }) == 200, "log-only mode must not block")
+check(body({ ctype = form, body = over }) == 200, "log-only mode must not answer 413")
+localized_global.WAF_body_block = true
+local attacker = "198.51.100.200"
+for _ = 1, 5 do
+	request(attacker, { ctype = form, body = "q=union" })
+end
+check(request(attacker) == 403, "5 body hits must ban")
+local big = "198.51.100.201"
+for _ = 1, 10 do
+	request(big, { ctype = form, body = over })
+end
+check(request(big) == 200, "413 for a large body must not count toward a ban")
+
+check(
+	request("198.51.100.210", { args = { ["x' union select 1,2--"] = true } }) == 403,
+	"a query argument name with a payload must get 403"
+)
+check(request("198.51.100.211", { args = { q = "union" } }) == 200, "query argument values are left to upstream")
+check(
+	request("198.51.100.212", { args = { union = true }, internal = true }) == 200,
+	"an internal redirect must not check argument names again"
+)
+local named = "198.51.100.213"
+for _ = 1, 5 do
+	request(named, { args = { union = "1" } })
+end
+check(request(named) == 403, "5 argument name hits must ban")
+check(body({ ctype = form, body = "1+union+select=2" }) == 403, "a urlencoded field name with a payload must get 403")
+check(
+	body({ ctype = mp, body = part('Content-Disposition: form-data; name="union"', "x") .. "--XyZ--\r\n" }) == 403,
+	"a multipart field name with a payload must get 403"
+)
+check(
+	request("198.51.100.214", { cookie = "a=1; q=un%69on" }) == 403,
+	"a decoded cookie value with a payload must get 403"
+)
+check(
+	request("198.51.100.215", { cookie = "_ga=GA1.1.123.456; wp-settings-1=libraryContent%3Dbrowse; e=" }) == 200,
+	"clean cookies must pass"
+)
+check(
+	request("198.51.100.216", { cookie = "q=union", internal = true }) == 200,
+	"an internal redirect must not check cookies again"
+)
+localized_global.WAF_cookie_block = false
+check(request("198.51.100.217", { cookie = "q=union" }) == 200, "cookie log-only mode must not block")
+localized_global.WAF_cookie_block = true
+
+for _, path in ipairs(temps) do
+	os.remove(path)
+end
 
 if failed > 0 then
 	os.exit(1)
