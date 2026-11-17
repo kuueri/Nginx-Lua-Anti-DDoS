@@ -255,13 +255,65 @@ localized_global.WAF_query_string_Request_table = {
 		"^.*$",
 		[[(?s)(?:.*\$\{jndi|(?:(?:[^$]++|\$(?!\{))*+\$\{[^}:]*+\})*+(?:[^$]++|\$(?!\{))*+\$\{[^}:]*+:[^}]*+\}).*]],
 	},
+	-- The rules below, through ASP, must stay linear too: an unbounded scan nested inside another lets a long value hit the PCRE limit and pass.
+	-- XSS, a tag that runs script or loads content. Browsers need the name right after "<", so "p<0.05" and "x < y" pass.
+	{
+		"^.*$",
+		[[(?s).*</?(?:script|iframe|frame|frameset|object|embed|applet|svg|math|img|image|video|audio|source|body|style|link|meta|base|form|input|button|textarea|select|details|marquee|isindex|template)(?![a-z0-9_-]).*]],
+	},
+	-- XSS, an event handler after any tag, such as <x onclick=...>; (?>...) locks the first tag.
+	{
+		"^.*$",
+		[[(?s)(?>.*?<[a-z]).*?[\s/"'\x60]on[a-z]{3,}\s*=.*]],
+	},
+	-- XSS, a script URL at the start of a value that a page may put into href or src.
+	-- The scheme must be followed by code, such as alert( or //, so a title search such as "JavaScript: The Good Parts" passes.
+	{
+		"^.*$",
+		[[(?s)[\x00-\x20]*(?:(?:javascript|vbscript|livescript)\s*:\s*(?:[^\s\w]|[\w$.]+\s*[(\x60=])|data\s*:\s*(?:text/html|image/svg[+\s]xml|application/(?:x-)?javascript)).*]],
+	},
+	-- Command injection, a shell separator or substitution, a common command, and then what only a shell line has next: its end, an operator, an option, a path, a digit, a quote, a URL, or a host.
+	-- So titles such as "Animal behaviour; cat breeds" or "Table tennis; ping pong" pass.
+	{
+		"^.*$",
+		[[(?s).*(?:[;|\n\x60]|&&|\$\()\s*(?:(?:/usr)?(?:/local)?/s?bin/)?(?:id|whoami|uname|cat|ls|wget|curl|nc|ncat|netcat|bash|sh|zsh|python[23]?|perl|php|ruby|ping|nslookup|dig|sleep|echo|chmod|rm|mkfifo|powershell|cmd|certutil|busybox|base64|telnet|tftp|ifconfig)(?:\s*$|\s*[|;&<>\x60)]|\s+[-/$.~\d'"]|\s+https?:|\s+[\w-]+\.[\w.-]*[a-z]{2,}).*]],
+	},
+	-- Command injection, strings that only an attack sends: a shell path, a /dev/tcp reverse shell, $IFS as a space, Shellshock, or a Windows shell with its switches.
+	{
+		"^.*$",
+		[[(?s).*(?:/bin/(?:ba|da|z|k)?sh(?![a-z])|/dev/(?:tcp|udp)/|\$\{?ifs\}?|\(\)\s*\{\s*[:\w]+;|cmd(?:\.exe)?\s*/[ck]\s|powershell(?:\.exe)?\s+-(?:e|enc|c|nop|w)\b).*]],
+	},
+	-- SSRF, a URL to a loopback, private, link-local, or cloud metadata address, also as hex, decimal, octal, an IPv6 literal, or behind user@, or a scheme that only internal services speak.
+	-- Public URLs, such as https://doi.org/... in a redirect parameter, pass.
+	{
+		"^.*$",
+		[[(?s).*(?:(?:gopher|dict|file|ldaps?|tftp|netdoc)://|jar:(?:https?|file|ftp)://|://(?>[^/@?#\s]*@)?(?:\[[0-9a-f:.%]+\]|(?:localhost|127(?:\.\d+){3}|0\.0\.0\.0|0x[0-9a-f]+|\d{8,10}|0\d+(?:\.\d+){3}|10(?:\.\d+){3}|192\.168(?:\.\d+){2}|172\.(?:1[6-9]|2\d|3[01])(?:\.\d+){2}|169\.254(?:\.\d+){2}|metadata\.google\.internal|100\.100\.100\.200)(?:[:/?#]|$))).*]],
+	},
+	-- Java deserialization, a serialized object as base64 (rO0AB), hex (aced0005), or raw bytes, or a JSON gadget type.
+	-- The object must start the value or follow a non-base64 character, so an arbitrary token, such as an OAI resumptionToken, cannot match by chance.
+	{
+		"^.*$",
+		[[(?s)(?:(?:.*[^a-z0-9+/])?(?:ro0ab|aced0005|\xac\xed\x00\x05)|.*(?:"@type"\s*:\s*"|jdbcrowsetimpl|templatesimpl|commons\.collections\.functors|ysoserial)).*]],
+	},
+	-- PHP object injection, a serialized object such as O:8:"stdClass":0:{} or O:+8:..., or a phar:// stream, whose metadata PHP unserializes.
+	-- Serialized arrays and strings without an object pass.
+	{
+		"^.*$",
+		[[(?s).*(?:(?<![a-z0-9_])[oc]:\+?\d{1,6}:"[^"]{1,200}":\d{1,6}:\{|phar://).*]],
+	},
+	-- ASP code injection, JSP and ERB template tags included: a <% tag, or the objects and calls that classic ASP webshells use.
+	{
+		"^.*$",
+		[[(?s).*(?:<%|(?<![a-z0-9_])(?:response\.(?:write|binarywrite)|server\.(?:createobject|execute|transfer|mappath)|createobject\s*\(|wscript\.shell|scripting\.filesystemobject|adodb\.stream|executeglobal|(?:eval|execute)\s*\(?\s*request)).*]],
+	},
 }
 
 -- Upstream matches header values raw, unanchored, and case-sensitively, so value patterns start with (?i).
 localized_global.WAF_Header_Request_table = {
+	-- XSS through headers that apps decode, store, or show: a cookie that PHP decodes, or a Referer or User-Agent in an admin log view; raw or percent-encoded.
 	{
-		"^cookie$",
-		"(?i)<script",
+		"^(?:cookie|referer|user-agent)$",
+		[[(?i)(?:<|%3c)/?(?:script|iframe|svg|img|body|object|embed|style|link|meta|base|form|input|details|math|video|audio)(?![a-z0-9_-])|^(?>.*?(?:<|%3c)[a-z]).*?(?:[\s/"'\x60+]|%2[0f27])on[a-z]{3,}\s*(?:=|%3d)]],
 	},
 	-- SQLi through headers that apps store or log: UNION SELECT and time-based or error-based functions.
 	{
@@ -277,6 +329,21 @@ localized_global.WAF_Header_Request_table = {
 	{
 		"^.*$",
 		[[(?is)^(?:.*\$\{jndi|(?:(?:[^$]++|\$(?!\{))*+\$\{[^}:]*+\})*+(?:[^$]++|\$(?!\{))*+\$\{[^}:]*+:[^}]*+\})]],
+	},
+	-- Java deserialization through any header, such as a rememberMe cookie: a serialized object at the start of a value, case-sensitive like base64.
+	{
+		"^.*$",
+		[[(?:^|[^A-Za-z0-9+/])(?:rO0AB|aced0005|ACED0005)]],
+	},
+	-- PHP object injection through cookies, which PHP decodes before an app unserializes them; raw or percent-encoded.
+	{
+		"^cookie$",
+		[[(?i)(?<![a-z0-9_])[oc](?::|%3a)\+?\d{1,6}(?::|%3a)(?:"|%22).{1,200}?(?:"|%22)(?::|%3a)\d{1,6}(?::|%3a)(?:\{|%7b)]],
+	},
+	-- Shellshock (CVE-2014-6271): a function definition in any header, which a CGI script would hand to bash.
+	{
+		"^.*$",
+		[[\(\s*\)\s*\{]],
 	},
 }
 
