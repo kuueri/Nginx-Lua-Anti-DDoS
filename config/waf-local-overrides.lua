@@ -276,15 +276,18 @@ localized_global.WAF_query_string_Request_table = {
 		[[(?s).*</?(?:script|iframe|frame|frameset|object|embed|applet|svg|math|img|image|video|audio|source|body|style|link|meta|base|form|input|button|textarea|select|details|marquee|isindex|template)(?![a-z0-9_-]).*]],
 	},
 	-- XSS, an event handler after any tag, such as <x onclick=...>; (?>...) locks the first tag.
+	-- A quote also opens it, because a quote can close the attribute an app echoes the value into, so a handler can follow without any tag.
 	{
 		"^.*$",
-		[[(?s)(?>.*?<[a-z]).*?[\s/"'\x60]on[a-z]{3,}\s*=.*]],
+		[[(?s)(?>.*?(?:<[a-z]|["'\x60])).*?[\s/"'\x60]on[a-z]{3,}\s*=.*]],
 	},
 	-- XSS, a script URL at the start of a value that a page may put into href or src.
 	-- The scheme must be followed by code, such as alert( or //, so a title search such as "JavaScript: The Good Parts" passes.
+	-- The scheme may also follow a delimiter, inside an attribute such as <a href="javascript:...">.
+	-- The two-way alternation keeps the scan linear; the optional form (?:.*[...])?[\x00-\x20]* cost 35 ms on 8 KB of spaces.
 	{
 		"^.*$",
-		[[(?s)[\x00-\x20]*(?:(?:javascript|vbscript|livescript)\s*:\s*(?:[^\s\w]|[\w$.]+\s*[(\x60=])|data\s*:\s*(?:text/html|image/svg[+\s]xml|application/(?:x-)?javascript)).*]],
+		[[(?s)(?:[\x00-\x20]*|.*[\s"'\x60=(<>])(?:(?:javascript|vbscript|livescript)\s*:\s*(?:[^\s\w]|[\w$.]+\s*[(\x60=])|data\s*:\s*(?:text/html|image/svg[+\s]xml|application/(?:x-)?javascript)).*]],
 	},
 	-- Command injection, a shell separator or substitution, a common command, and then what only a shell line has next: its end, an operator, an option, a path, a digit, a quote, a URL, or a host.
 	-- So titles such as "Animal behaviour; cat breeds" or "Table tennis; ping pong" pass.
