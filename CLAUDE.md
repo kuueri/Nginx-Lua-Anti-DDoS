@@ -60,3 +60,7 @@ Real nginx behaviour (Lua runtime, SELinux, systemd) is only observable on a tar
 - `config/nginx-waf.conf` carries WAF directives only and turns the WAF on for every site with `access_by_lua_file` in the `http` block.
   `lua_package_path` and `load_module` belong to the main config (`load_lua_module`) or the distro's module setup, and a second copy fails `nginx -t` on duplicates.
 - `config/waf-ban.lua` runs as both `rewrite_by_lua_file` and `log_by_lua_file`, branched on `ngx.get_phase()`, because nginx allows one `rewrite_by_lua*` per context.
+- Policy: crawlers, scrapers, AI agents, and Turnitin are allowed with strict limits, and only attack payloads lead to a ban.
+  Every 403 from the access phase counts toward the `waf-ban.lua` ban, so `user_agent_blacklist_table` is empty: upstream's other 403 sources are the WAF rule tables and Tor blocking (`.onion` only).
+  The log phase never counts a User-Agent matching `AI_AGENTS` or `CRAWLERS` (`bot`, `crawl`, `spider`, `slurp`, `turnitin`, `facebookexternalhit`), because crawlers follow links with payloads planted elsewhere; generic clients such as `curl` still get banned for payloads.
+  The rewrite phase gives each `AI_AGENTS` family (plain lowercase substrings of the User-Agent) one shared budget across all addresses, `AI_LIMIT` per `AI_WINDOW`, and answers the excess with 429, which the ban ignores.

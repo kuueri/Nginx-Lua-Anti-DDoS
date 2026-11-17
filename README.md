@@ -124,10 +124,13 @@ A ban rejects all requests from one client address for a time.
 The WAF rules apply to all requests. A request that matches a rule gets `403`, but upstream does not ban the address.
 `waf-ban.lua` adds that ban:
 
-- It counts the `403` responses from the WAF for each client address.
+- It counts the `403` responses from the WAF for each client address. The WAF sends `403` only for a request with an attack payload, because the User-Agent blacklist is empty.
 - After 5 of them in 10 minutes, it bans the address for 1 hour.
 - It does not count a `403` from the application, for example DSpace, or from a `return 403` in the site config.
 - It never bans private or loopback addresses, so it cannot ban a reverse proxy.
+- It never bans crawlers, AI agents, or Turnitin. These are User-Agents that contain `bot`, `crawl`, `spider`, `slurp`, `turnitin`, or `facebookexternalhit`, and the AI agent families.
+  A crawler can follow a link with an attack payload that an attacker put on another site. The WAF rejects that request with `403`, but does not ban the crawler.
+- It bans generic HTTP clients, for example `curl` and `python-requests`, when they send attack payloads.
 
 To change these numbers, edit `LIMIT`, `WINDOW`, and `BAN` in `config/waf-ban.lua`.
 
@@ -189,9 +192,15 @@ Upstream uses this list only while the challenge stays in mode 3. The automatic 
 
 ### User-Agent lists
 
-`localized_global.user_agent_blacklist_table` rejects some User-Agents with `403` on all paths, the challenge-free paths included.
-The list is the upstream list without `curl` and `python`, because OAI-PMH harvesters and REST clients use these User-Agents.
-The upstream entry `OAI-` also matched `OAI-Harvester`, so the list uses `OAI-SearchBot` instead.
+Crawlers, scrapers, AI agents, and Turnitin can access the sites, with strict limits. Only an attack payload causes a ban.
+So `localized_global.user_agent_blacklist_table` is empty. It replaces the upstream list, which rejected `curl`, `python`, `ChatGPT`, `GPTBot`, `OAI-`, empty User-Agents, and others with `403`.
+Each `403` counts toward a ban, so the upstream list would ban these clients.
+
+The nginx config of each site can limit crawlers with `limit_req`.
+AI agents get a strict limit in all sites. `waf-ban.lua` limits each AI agent family to 10 requests per minute, for all addresses together.
+For example, all `ChatGPT-User` requests share one limit. A request above the limit gets `429` with `Retry-After: 60`. A `429` does not count toward a ban.
+`AI_AGENTS` in `config/waf-ban.lua` lists the families, for example `gptbot`, `chatgpt-user`, `claude-user`, and `perplexitybot`.
+To change the limit, edit `AI_LIMIT` and `AI_WINDOW` in the same file.
 
 Googlebot, Bingbot, and the Turnitin crawler skip the blacklist and the challenge, also during an attack. Google Scholar uses Googlebot.
 `localized_global.user_agent_whitelist_table` matches their User-Agents. The WAF rules still apply to them.
