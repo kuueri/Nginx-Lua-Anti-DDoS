@@ -10,6 +10,11 @@ localized_global.secret = "CHANGE_ME_TO_LONG_RANDOM_SECRET"
 localized_global.expire_time = 86400
 localized_global.remote_addr = "auto"
 
+-- Upstream's default true sends every request that passes its checks to the backend a second time, as a HEAD subrequest, only to learn the Content-Type.
+-- On DSpace that doubled Tomcat's page renders: 79,189 HEAD for 78,598 GET on 2026-11-17, against 535 HEAD on 2026-11-15 before the WAF.
+-- Upstream's own advice for subrequest trouble is false, which only stops range-filter rules from matching by Content-Type; range filtering still runs.
+localized_global.content_type_fix = false
+
 -- Upstream's automatic "I am Under Attack" mode rewrites master_switch on every request: 2 (no challenge) while at most 100 IPs are banned, 1 (challenge on every path, these included) above that.
 -- Mode 3 and these paths therefore only apply if that rewrite does not run; during an attack only whitelisted User-Agents skip the challenge.
 -- Upstream runs the WAF rules before this switch, so these paths still get every WAF_* table below.
