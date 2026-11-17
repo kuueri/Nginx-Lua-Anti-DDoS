@@ -29,21 +29,11 @@ localized_global.master_switch_custom_hosts = {
 	{ 2, "^https?://[^/]+/oai2?%.php" },
 }
 
--- Upstream blocks these User-Agents with 403 on every path, the challenge bypass paths included.
--- It replaces the upstream default list, minus "curl" and "python", which OAI-PMH harvesters and REST clients use; "OAI-" is narrowed to OpenAI's OAI-SearchBot, since it also matched "OAI-Harvester".
-localized_global.user_agent_blacklist_table = {
-	{ "^\\s*$", 3 },
-	{ "Kodi", 1 },
-	{ "XBMC", 1 },
-	{ "winhttp", 1 },
-	{ "HTTrack", 1 },
-	{ "libwww-perl", 1 },
-	{ "ChatGPT", 1 },
-	{ "GPTBot", 1 },
-	{ "Deepseek", 1 },
-	{ "OAI-SearchBot", 1 },
-	{ "AI2Bot", 1 },
-}
+-- Upstream would block these User-Agents with 403 on every path, and waf-ban.lua counts every 403 toward a ban.
+-- Policy: crawlers, scrapers, AI agents, and Turnitin may access the sites with strict limits, and only attack payloads lead to a ban.
+-- So this empty table replaces upstream's default list (curl, python, ChatGPT, GPTBot, OAI-, empty User-Agent, ...), and a 403 then always means a WAF rule hit.
+-- waf-ban.lua rate-limits AI agents with 429, and the site's nginx config can limit other crawlers.
+localized_global.user_agent_blacklist_table = {}
 
 -- Search engine and plagiarism crawlers skip the blacklist and the JavaScript challenge, so the sites stay indexed and checkable; Google Scholar crawls as Googlebot.
 -- The patterns cover the desktop and smartphone User-Agents of Googlebot and Bingbot, and Turnitin's crawler.
