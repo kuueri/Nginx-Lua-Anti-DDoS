@@ -82,6 +82,8 @@ local cases = {
 	{ true, "uri", "/wp-admin/setup-config.php" },
 	{ true, "uri", "/configuration.php" },
 	{ true, "uri", "/wp-content/cache/page.html" },
+	{ false, "uri", "/2025/11/cache-invalidation-tips/" },
+	{ false, "uri", "/cached-pages/" },
 	{ true, "uri", "/composer.json" },
 	{ true, "uri", "/composer.lock" },
 	{ true, "uri", "/wp-content/debug.log" },
