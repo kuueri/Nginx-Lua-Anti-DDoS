@@ -72,9 +72,10 @@ localized_global.WAF_URI_Request_table = {
 		[[configuration\.php]],
 	},
 	-- Also blocks the CSS/JS that Autoptimize and W3 Total Cache serve from /wp-content/cache/, so drop it on sites that use them.
+	-- The trailing slash lets page slugs that start with "cache" through.
 	{
 		"^.*$",
-		"/cache",
+		"/cache/",
 	},
 	{
 		"^.*$",
