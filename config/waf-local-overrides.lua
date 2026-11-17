@@ -249,9 +249,11 @@ localized_global.WAF_query_string_Request_table = {
 		[[(?s).*\.\./.*]],
 	},
 	-- Log4Shell (CVE-2021-44228, Log4j 2.x): ${jndi:...} and obfuscated ${...:...} lookups
+	-- A ${...} without ":" before its "}" is skipped whole and possessively, which suffices because a ${ nested inside it has no ":" before that "}" either.
+	-- So the scan stays linear without a length cap that a long key, as in ${${aaa...:-j}ndi:...}, could outrun; the earlier .*\$\{[^}]*: form spent 10 s of PCRE JIT time on 8 KB of "${:".
 	{
 		"^.*$",
-		[[(?s).*\$\{(?:jndi|[^}]*:[^}]*\}).*]],
+		[[(?s)(?:.*\$\{jndi|(?:(?:[^$]++|\$(?!\{))*+\$\{[^}:]*+\})*+(?:[^$]++|\$(?!\{))*+\$\{[^}:]*+:[^}]*+\}).*]],
 	},
 }
 
@@ -271,9 +273,10 @@ localized_global.WAF_Header_Request_table = {
 		[[(?:/|\\)]],
 	},
 	-- Log4Shell (CVE-2021-44228, Log4j 2.x): scan every header value for ${jndi:...} / ${...:...}
+	-- The same linear scan as the query rule, anchored with ^ so that it runs once per value.
 	{
 		"^.*$",
-		[[(?i)\$\{(?:jndi|[^}]*:[^}]*\})]],
+		[[(?is)^(?:.*\$\{jndi|(?:(?:[^$]++|\$(?!\{))*+\$\{[^}:]*+\})*+(?:[^$]++|\$(?!\{))*+\$\{[^}:]*+:[^}]*+\})]],
 	},
 }
 
