@@ -207,10 +207,19 @@ localized_global.WAF_query_string_Request_table = {
 		"^.*$",
 		[[(?s)(?>.*?['"\d)]\s*(?:or|and|xor|\|\||&&)\s*\(?\s*['"\d]).*[=<>].*]],
 	},
-	-- SQLi, time-based and error-based functions, matched only with their opening parenthesis so "sleep quality" passes.
+	-- SQLi, a whole value that is a numeric tautology without a comparison, such as 1 or 1, 1 or true, or 1 || 1, optionally ending in a comment.
+	-- Both sides must hold the same number, so a search such as "1 or 2" passes.
+	-- \1 refers to group 1, because upstream's ^(?i)...$ wrapping adds no group.
 	{
 		"^.*$",
-		[[(?s).*(?<![a-z_])(?:(?:sleep|pg_sleep|benchmark|extractvalue|updatexml|load_file|group_concat|concat|concat_ws|name_const)\s*\(|char\s*\(\s*\d).*]],
+		[[(?s)\s*-?(\d+)\s*(?:(?:or|xor|and)\s*(?:-?\1|true|false)|(?:\|\||&&)\s*-?\d+)\s*(?:(?:--|#|/\*).*)?]],
+	},
+	-- SQLi, time-based and error-based functions, matched only with their opening parenthesis so "sleep quality" passes.
+	-- substr, substring, and mid count only with two numeric arguments, the blind SQLi probe shape, so "Substring (computer science)" passes.
+	-- ascii( and ord( stay out, because titles such as "ASCII (...)" would match; the substr or mid call inside such a probe already matches.
+	{
+		"^.*$",
+		[[(?s).*(?<![a-z_])(?:(?:sleep|pg_sleep|benchmark|extractvalue|updatexml|load_file|group_concat|concat|concat_ws|name_const|unhex|ifnull|make_set)\s*\(|char\s*\(\s*\d|(?:substr(?:ing)?|mid)\s*\([^()]*,\s*\d+\s*,\s*\d+\s*\)).*]],
 	},
 	-- SQLi, a quote closed by a comment or terminator, such as admin'-- or admin'#.
 	{
