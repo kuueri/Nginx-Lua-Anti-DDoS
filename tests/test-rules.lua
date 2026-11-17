@@ -44,6 +44,14 @@ for _, r in ipairs(g.user_agent_blacklist_table) do
 	local val = (mode == 1 or mode == 4) and "((?i)" .. r[1]:lower() .. ")" or "(" .. r[1] .. ")"
 	table.insert(rules.uablock, { src = r[1], val = val })
 end
+-- The waf_login map in nginx-waf.conf: "block" means the request is keyed into the waf_login rate limit.
+rules.login = {}
+for line in io.lines(arg[0]:gsub("[^/]*$", "") .. "../config/nginx-waf.conf") do
+	local p = line:match('^%s*"~([^"]+)"%s+%$binary_remote_addr;')
+	if p then
+		table.insert(rules.login, { src = p, val = p })
+	end
+end
 
 -- The first pass only records every regex and subject; Perl matches them all at once, and the second pass reads the results.
 local asked, index, results = {}, {}, nil
@@ -70,6 +78,9 @@ local match = {
 		return re(value, r.val)
 	end,
 	uablock = function(r, value)
+		return re(value, r.val)
+	end,
+	login = function(r, value)
 		return re(value, r.val)
 	end,
 }
@@ -392,6 +403,21 @@ local cases = {
 		"uablock",
 		"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36",
 	},
+	{ true, "login", "POST:/wp-login.php" },
+	{ true, "login", "POST:/blog/wp-login.php" },
+	{ true, "login", "POST:/index.php" },
+	{ true, "login", "POST:/slims/index.php" },
+	{ true, "login", "POST:/password-login" },
+	{ true, "login", "POST:/xmlui/password-login" },
+	{ true, "login", "POST:/rest/login" },
+	{ true, "login", "POST:/server/api/authn/login" },
+	{ false, "login", "GET:/wp-login.php" },
+	{ false, "login", "POST:/wp-login.php.bak" },
+	{ false, "login", "POST:/wp-admin/admin-ajax.php" },
+	{ false, "login", "POST:/wp-admin/index.php" },
+	{ false, "login", "POST:/admin/index.php" },
+	{ false, "login", "POST:/admin/modules/bibliography/index.php" },
+	{ false, "login", "POST:/handle/123456789/1" },
 }
 
 local function hits(c)
