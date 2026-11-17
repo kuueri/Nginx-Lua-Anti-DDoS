@@ -91,9 +91,13 @@ localized_global.WAF_URI_Request_table = {
 		"^.*$",
 		[[composer\.lock]],
 	},
+	-- Upload directories of WordPress (wp-content/uploads) and SLiMS (files, repository): a script there can only be an uploaded webshell.
+	-- Upstream never reads upload bodies, so this rule keeps such a file from running, with double extensions such as shell.php.jpg, path info such as x.jpg/y.php, and Tomcat's shell.jsp;.png.
+	-- The extension must end the path or be followed by . ; / or %, so names such as report.plan.pdf pass; % stays last in the class, because upstream turns %. into ".".
+	-- ^(?>...) locks the first upload directory, so a path that repeats it stays a linear scan.
 	{
 		"^.*$",
-		[[wp-content/uploads/.*\.php]],
+		[[^(?>.*?(?:wp-content/uploads|/repository|/files)/).*?\.(?:php\d?|phtml|phar|jspx?|aspx?|cgi|pl|sh)(?:[./;%]|$)]],
 	},
 	{
 		"^.*$",
@@ -128,14 +132,6 @@ localized_global.WAF_URI_Request_table = {
 	{
 		"^.*$",
 		"/upgrade/",
-	},
-	{
-		"^.*$",
-		[[/repository/.*\.php]],
-	},
-	{
-		"^.*$",
-		[[/files/.*\.php]],
 	},
 	{
 		"^.*$",
