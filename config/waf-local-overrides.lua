@@ -258,10 +258,10 @@ localized_global.WAF_query_string_Request_table = {
 	},
 	-- Local file inclusion by absolute path, because include() and file_get_contents() open /etc/passwd without any ../.
 	-- The list holds the OS files that CRS rule 930120 (lfi-os-files.data) sees probed most.
-	-- (?![a-z]) lets "etc/passwords" pass.
+	-- (?![a-z]) lets "etc/passwords" pass, and (?:\.?/)*+ catches /etc/./passwd and /etc//passwd, which PHP opens too.
 	{
 		"^.*$",
-		[[(?s)(?:(?:.*/)?etc/(?:passwd|shadow|group|hosts)(?![a-z])|.*(?:/proc/self/|win\.ini|boot\.ini)).*]],
+		[[(?s)(?:(?:.*/)?etc/(?:\.?/)*+(?:passwd|shadow|group|hosts)(?![a-z])|.*(?:/proc/self/|win\.ini|boot\.ini)).*]],
 	},
 	-- Log4Shell (CVE-2021-44228, Log4j 2.x): ${jndi:...} and obfuscated ${...:...} lookups
 	-- A ${...} without ":" before its "}" is skipped whole and possessively, which suffices because a ${ nested inside it has no ":" before that "}" either.
@@ -284,18 +284,21 @@ localized_global.WAF_query_string_Request_table = {
 	},
 	-- XSS, a script URL at the start of a value that a page may put into href or src.
 	-- The scheme must be followed by code, such as alert( or //, so a title search such as "JavaScript: The Good Parts" passes.
-	-- The scheme may also follow a delimiter, inside an attribute such as <a href="javascript:...">.
+	-- The scheme may also follow a quote, "=", "(", "<", or ">", inside an attribute such as <a href="javascript:...">.
+	-- A space is no such delimiter, so a search such as Crockford JavaScript: "the good parts" passes.
 	-- The two-way alternation keeps the scan linear; the optional form (?:.*[...])?[\x00-\x20]* cost 35 ms on 8 KB of spaces.
 	{
 		"^.*$",
-		[[(?s)(?:[\x00-\x20]*|.*[\s"'\x60=(<>])(?:(?:javascript|vbscript|livescript)\s*:\s*(?:[^\s\w]|[\w$.]+\s*[(\x60=])|data\s*:\s*(?:text/html|image/svg[+\s]xml|application/(?:x-)?javascript)).*]],
+		[[(?s)(?:[\x00-\x20]*|.*["'\x60=(<>])(?:(?:javascript|vbscript|livescript)\s*:\s*(?:[^\s\w]|[\w$.]+\s*[(\x60=])|data\s*:\s*(?:text/html|image/svg[+\s]xml|application/(?:x-)?javascript)).*]],
 	},
 	-- Command injection, a shell separator or substitution, a common command, and then what only a shell line has next: its end, an operator, an option, a path, a digit, a quote, a URL, or a host.
 	-- So titles such as "Animal behaviour; cat breeds" or "Table tennis; ping pong" pass.
-	-- A single & also starts the next command, and text such as "R&D" or "Tom & Jerry" still passes, because a command and a shell-like tail must follow.
+	-- A single & also starts the next command, but titles use it too, as in "R & Python", "Anxiety & sleep", or "P&ID".
+	-- So after a single &, which leaves group 1 unset, the conditional (?(1)...|...) asks for a stronger tail: a pipe or redirect, an option, a path, a quote, a URL, or a host.
+	-- That lets "x&id" through, while "x&id|..." or "x&cat /etc/passwd" still match.
 	{
 		"^.*$",
-		[[(?s).*(?:[;|\n\x60]|&&?|\$\()\s*(?:(?:/usr)?(?:/local)?/s?bin/)?(?:id|whoami|uname|cat|ls|wget|curl|nc|ncat|netcat|bash|sh|zsh|python[23]?|perl|php|ruby|ping|nslookup|dig|sleep|echo|chmod|rm|mkfifo|powershell|cmd|certutil|busybox|base64|telnet|tftp|ifconfig)(?:\s*$|\s*[|;&<>\x60)]|\s+[-/$.~\d'"]|\s+https?:|\s+[\w-]+\.[\w.-]*[a-z]{2,}).*]],
+		[[(?s).*(?:([;|\n\x60]|&&|\$\()|&)\s*(?:(?:/usr)?(?:/local)?/s?bin/)?(?:id|whoami|uname|cat|ls|wget|curl|nc|ncat|netcat|bash|sh|zsh|python[23]?|perl|php|ruby|ping|nslookup|dig|sleep|echo|chmod|rm|mkfifo|powershell|cmd|certutil|busybox|base64|telnet|tftp|ifconfig)(?(1)(?:\s*$|\s*[|;&<>\x60)]|\s+[-/$.~\d'"]|\s+https?:|\s+[\w-]+\.[\w.-]*[a-z]{2,})|(?:\s*[|<>\x60]|\s+-{1,2}[a-z]|\s+[/$~'"]|\s+https?:|\s+[\w-]+\.[\w.-]*[a-z]{2,})).*]],
 	},
 	-- Command injection, strings that only an attack sends: a shell path, a /dev/tcp reverse shell, $IFS as a space, Shellshock, or a Windows shell with its switches.
 	{
