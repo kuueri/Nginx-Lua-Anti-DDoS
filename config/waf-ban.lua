@@ -46,6 +46,11 @@ if ngx.get_phase() == "rewrite" then
 	if strikes:get("ban:" .. ip) then
 		return ngx.exit(ngx.HTTP_FORBIDDEN)
 	end
+	local _, args_err = ngx.req.get_uri_args()
+	local _, headers_err = ngx.req.get_headers()
+	if args_err == "truncated" or headers_err == "truncated" then
+		return ngx.exit(ngx.HTTP_FORBIDDEN)
+	end
 	local agent = find(AI_AGENTS)
 	if agent and (strikes:incr("ai:" .. agent, 1, 0, AI_WINDOW) or 0) > AI_LIMIT then
 		ngx.header["Retry-After"] = AI_WINDOW
