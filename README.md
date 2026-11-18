@@ -42,6 +42,26 @@ The command copies `scripts/`, `config/`, and `lua/` to `/opt/nginx-waf` on the 
 On a new server, it then runs the install script. On an installed server, it runs the update script.
 The server does not need access to this repo. It needs only ssh and sudo for `user`.
 
+The command tells you before ssh or sudo can ask for a password:
+
+```text
+[08:57:01] INFO: Connecting to user@server over ssh; type the ssh password of the remote user if ssh asks for it
+user@server's password:
+[08:57:04] INFO: Running the installer as root on user@server; type the sudo password of the remote user if sudo asks for it
+[sudo] password for user on server:
+```
+
+Both steps use one ssh connection, so ssh asks for the password only once.
+
+Each script prints one line for each step, with the time and a level:
+
+- `INFO` on stdout: a step starts or ends normally.
+- `WARN` on stdout, in yellow on a terminal: the script continues, but you must know about it. Examples: the update hook is not installed, or the LuaJIT JIT is off.
+- `ERROR` on stderr: the script stops. The line before it names the step that failed.
+  The scripts restore the previous files before they stop.
+
+To get `WARN` without color, set `NO_COLOR=1`. Output to a file or a pipe has no color.
+
 To do the same steps manually, copy the three directories into one root-owned directory on the server:
 
 ```bash

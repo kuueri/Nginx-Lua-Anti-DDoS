@@ -39,6 +39,11 @@ Real nginx behaviour (Lua runtime, SELinux, systemd) is only observable on a tar
   It looks for the `# configuration file /etc/nginx/conf.d/waf.conf:` header in the dump, because a config without that include passes `nginx -t` while upstream runs on its public default secret.
   When the header is missing, it deletes inline WAF directives from the main config, since a second `lua_shared_dict` fails `nginx -t`, and inserts `include /etc/nginx/conf.d/waf.conf;` after `lua_package_path` or else after the first `http {`.
 - Paths are relative (`etc/nginx/...`) and always joined as `"$ROOT/$f"`, which is what makes the scratch-root test possible.
+- Every script sources `scripts/lib/log.sh` (`common.sh` does it for the update scripts): `info` and `warn` print to stdout, `error` and `die` to stderr, as `[HH:MM:SS] LEVEL: message`; `warn` is yellow only when stdout is a terminal and `NO_COLOR` is unset, which the tests check through a Python `pty`, since `script(1)` is not always installed.
+  Its `errtrace` ERR trap prints one ERROR for a command that stops a script under `set -e`, only in the top-level shell, because a failure inside `( ... )` also fails the enclosing command; contexts that test a status (`if`, `||`) never trigger it.
+  So functions must never log from inside a `$( ... )` whose output a caller captures, and the tests capture stdout and stderr together in `out.log`.
+- `deploy.sh` announces each ssh and sudo password prompt, gives sudo a `-p` prompt (the test's sudo stub skips it), and runs both ssh steps over one `ControlMaster` connection so a password login asks once.
+  The remote `sh -c` script cannot source `log.sh`, so it defines its own `info`; its messages must not contain a single quote.
 
 ## Upstream
 
