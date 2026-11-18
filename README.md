@@ -114,8 +114,13 @@ It also installs a package-manager hook that runs the update script immediately 
 - Ubuntu: apt has no hook for one package. A dpkg `Post-Invoke` hook in `/etc/apt/apt.conf.d/99nginx-waf` runs `update-deb.sh` after each package run.
   That run changes nothing when nginx and the WAF files did not change.
 
-The hook builds and runs code as root. The script installs the hook only when root owns `/opt/nginx-waf`, `BUILD_DIR`, and each parent directory.
-Only root can have write access to them. Otherwise, the script removes an old hook and shows a warning.
+The hook builds and runs code as root.
+So the script installs the hook only when these conditions are true for `/opt/nginx-waf`, `BUILD_DIR`, and each parent directory:
+
+- Root owns them.
+- Only root has write access to them.
+
+Otherwise, the script removes an old hook and shows a warning.
 A build by the scripts goes to `/usr/local/src/nginx-lua`, which meets these conditions.
 An older manual build in `~/build/nginx-lua` does not. Move it one time, and the update script then uses the new path:
 
@@ -157,24 +162,44 @@ The rules check the request path, each decoded query value, and some header valu
 The path rules check the path twice: as the client sent it, and after nginx decodes `%XX` and resolves `..`.
 So `/xmlrpc%2ephp` gets `403` like `/xmlrpc.php`, because nginx and Tomcat decode the path before they pick a file.
 
-`waf-ban.lua` also checks the name of each query argument with the query value rules, because upstream checks only the values; a hit gets `403`.
-It checks each cookie value too, after it decodes it as PHP does.
-With `WAF_cookie_block = false`, the cookie check only writes `Would block (log only)` lines, because cookies often carry JSON or tokens.
-`waf-ban.lua` also checks request bodies with the query value rules: each urlencoded field, each multipart field that is not a file, and a JSON body as one text.
-It reads bodies up to 128 KB.
-A larger urlencoded or JSON body, or one with more than 1000 fields, gets `413`; a larger multipart body is an upload, and it is not checked.
-With `WAF_body_block = false`, the body check only writes `Would block (log only)` lines to the error log.
-Set it to `true` after a week without false positives; then a hit gets `403` and counts toward a ban.
-`WAF_body_skip` lists the paths whose bodies are not checked, such as the WordPress editors, where HTML and SQL words are normal content.
-Upstream's own POST table stays empty, because upstream reads the whole body of each POST request into memory when a POST rule exists, uploads included.
+Upstream checks only the query values.
+`waf-ban.lua` uses the query value rules on more parts of the request:
+
+- The name of each query argument. A hit gets `403`.
+- Each cookie value, after `waf-ban.lua` decodes it as PHP does.
+  With `WAF_cookie_block = false`, a hit only writes a `Would block (log only)` line, because cookies often carry JSON or tokens.
+- The request body, up to 128 KB:
+    - each urlencoded field
+    - each multipart field that is not a file
+    - a JSON body, as one text
+
+A body with more than 1000 fields gets `413`.
+A urlencoded or JSON body larger than 128 KB also gets `413`.
+A multipart body larger than 128 KB is an upload, and `waf-ban.lua` does not check it.
+
+With `WAF_body_block = false`, a body hit only writes a `Would block (log only)` line to the error log.
+Set `WAF_body_block` to `true` after one week without false positives.
+Then a body hit gets `403` and counts toward a ban.
+`WAF_body_skip` lists the paths whose bodies are not checked, for example the WordPress editors, where HTML and SQL words are normal content.
+Upstream's own POST table stays empty.
+When a POST rule exists, upstream reads the whole body of each POST request into memory, uploads included.
+
 The rules do not check uploaded files.
 Instead, a request for a script in an upload directory (`wp-content/uploads`, `/files`, `/repository`) gets `403`, so an uploaded webshell cannot run.
 The script extensions are `php` (also `php5` and similar), `phtml`, `phar`, `jsp`, `jspx`, `asp`, `aspx`, `cgi`, `pl`, and `sh`, also in double extensions such as `shell.php.jpg`.
+
 CSRF checks need the `Origin` header, so the rules do not cover CSRF.
 
-`config/nginx-waf.conf` defines the `waf_login` rate-limit zone, 10 login POSTs per minute per address, but no site uses it until it adds `limit_req zone=waf_login burst=5 nodelay;` to its `server` block or its login `location`.
-The zone covers POSTs to `wp-login.php`, `index.php` (the SLiMS logins, but not under `admin/` or `wp-admin/`), DSpace's `password-login`, `rest/login`, and `server/api/authn/login`, each at the site root or one directory below it.
-The limit answers `429` when the server sets `limit_req_status 429`, otherwise `503`, and neither counts toward a ban.
+`config/nginx-waf.conf` defines the `waf_login` rate-limit zone: 10 login POSTs per minute for each address.
+The zone has no effect on a site until the site adds `limit_req zone=waf_login burst=5 nodelay;` to its `server` block or its login `location`.
+The zone counts POSTs to these paths, at the site root or one directory below it:
+
+- WordPress: `wp-login.php`
+- SLiMS: `index.php`, but not under `admin/` or `wp-admin/`
+- DSpace: `password-login`, `rest/login`, and `server/api/authn/login`
+
+A request above the limit gets `429` when the server sets `limit_req_status 429`, and `503` when it does not.
+Neither response counts toward a ban.
 
 Upstream checks only the first 100 query arguments and the first 100 headers.
 `waf-ban.lua` rejects a request with more query arguments or more headers with `403`, and this `403` does not count toward a ban.
@@ -188,8 +213,9 @@ The WAF rules apply to all requests. A request that matches a rule gets `403`, b
 
 - It counts the `403` responses from the WAF for each client address. The WAF sends `403` only for a request with an attack payload, because the User-Agent blacklist is empty.
 - After 5 of them in 10 minutes, it bans the address for 1 hour.
-- Each later ban of the same address lasts twice as long as the one before: 2 hours, 4 hours, 8 hours, and so on, with no cap.
-  The ban count lives in the `waf_strikes` shared dict, so a reload keeps it and only an nginx restart clears it.
+- Each later ban of the same address is two times longer than the ban before it.
+  So the next bans last 2 hours, 4 hours, 8 hours, and so on, with no maximum.
+  The ban count is in the `waf_strikes` shared dict, so a reload keeps it and only an nginx restart clears it.
 - It does not count a `403` from the application, for example DSpace, or from a `return 403` in the site config.
 - It never bans private or loopback addresses, so it cannot ban a reverse proxy.
 - It never bans crawlers, AI agents, or Turnitin. These are User-Agents that contain `bot`, `crawl`, `spider`, `slurp`, `turnitin`, or `facebookexternalhit`, and the AI agent families.

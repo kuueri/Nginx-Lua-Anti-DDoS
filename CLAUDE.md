@@ -81,3 +81,19 @@ Real nginx behaviour (Lua runtime, SELinux, systemd) is only observable on a tar
   The rewrite phase gives each `AI_AGENTS` family (plain lowercase substrings of the User-Agent) one shared budget across all addresses, `AI_LIMIT` per `AI_WINDOW`, and answers the excess with 429, which the ban ignores.
 - The `waf_login` zone in `config/nginx-waf.conf` is opt-in per site with `limit_req zone=waf_login burst=5 nodelay;`, because a `limit_req` in `http` would also reach unrelated servers such as DSpace's 19123 proxy.
   It sets no `limit_req_status`, because DSpace sets one in `http` and a duplicate fails `nginx -t`, and DSpace's login locations, which have their own `limit_req`, do not inherit it.
+
+## Documentation
+
+- Not every change needs documentation. Put each fact in the one place where its reader looks for it:
+
+    | Fact                                                         | Place                                     |
+    | ------------------------------------------------------------ | ----------------------------------------- |
+    | What the operator sees, configures, or runs                  | `README.md`                               |
+    | A constraint or trap that the code does not show to an agent | `CLAUDE.md`                               |
+    | How upstream treats one config entry                         | The comment above that entry in `config/` |
+    | Why a change was made                                        | The commit message                        |
+    | The exact behavior of a rule or script                       | A case in `tests/`                        |
+    | A server-specific value, a one-off finding, or a debug log   | Nowhere in the repo                       |
+
+- Keep each addition to the shortest text that keeps its full meaning: the condition, the number, and the reason.
+  Do not repeat a fact that another place already holds. Point to that place instead.
