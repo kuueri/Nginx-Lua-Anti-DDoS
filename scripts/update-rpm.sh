@@ -13,8 +13,11 @@ install_build_deps() {
 	for dep in gcc make git wget tar pcre2-devel zlib-devel openssl-devel; do
 		rpm -q "$dep" >/dev/null 2>&1 || missing+=("$dep")
 	done
-	[ "${#missing[@]}" -gt 0 ] || return 0
-	log "Installing build dependencies: ${missing[*]}"
+	if [ "${#missing[@]}" -eq 0 ]; then
+		info "All build dependencies are installed"
+		return 0
+	fi
+	info "Installing build dependencies with dnf: ${missing[*]}"
 	dnf install -y -q "${missing[@]}"
 }
 
@@ -29,16 +32,21 @@ install_update_hook() {
 		rm -f -- "$action"
 		return 0
 	fi
-	if ! rpm -q "$plugin" >/dev/null 2>&1 && ! dnf install -y -q "$plugin"; then
-		log "WARN: cannot install $plugin; run update-rpm.sh by hand after every nginx upgrade"
-		return 0
+	if ! rpm -q "$plugin" >/dev/null 2>&1; then
+		info "Installing $plugin for the update hook"
+		if ! dnf install -y -q "$plugin"; then
+			warn "cannot install $plugin; run update-rpm.sh by hand after every nginx upgrade"
+			return 0
+		fi
 	fi
 	mkdir -p "$(dirname "$action")"
 	printf 'nginx*:in:/usr/bin/env BUILD_DIR=%s %s/update-rpm.sh\n' "$BUILD_DIR" "$scripts" >"$action"
+	info "Installed the update hook at $action"
 }
 
 grep -qE '^ID(_LIKE)?=.*(rhel|fedora)' "$ROOT/etc/os-release" || die "this script supports RPM-based systems (RHEL family) only"
-log "Starting WAF update"
+info "Starting WAF update on an RPM-based system"
 ensure_modules
 sync_waf
 install_update_hook
+info "WAF update finished"

@@ -12,8 +12,11 @@ install_build_deps() {
 	for dep in build-essential git wget tar libpcre2-dev zlib1g-dev libssl-dev; do
 		dpkg-query -W -f='${Status}' "$dep" 2>/dev/null | grep -q 'install ok installed' || missing+=("$dep")
 	done
-	[ "${#missing[@]}" -gt 0 ] || return 0
-	log "Installing build dependencies: ${missing[*]}"
+	if [ "${#missing[@]}" -eq 0 ]; then
+		info "All build dependencies are installed"
+		return 0
+	fi
+	info "Installing build dependencies with apt-get: ${missing[*]}"
 	apt-get update -q
 	DEBIAN_FRONTEND=noninteractive apt-get install -y -q "${missing[@]}"
 }
@@ -31,10 +34,12 @@ install_update_hook() {
 	fi
 	mkdir -p "$(dirname "$hook")"
 	printf 'DPkg::Post-Invoke { "/usr/bin/env BUILD_DIR=%s %s/update-deb.sh || true"; };\n' "$BUILD_DIR" "$scripts" >"$hook"
+	info "Installed the update hook at $hook"
 }
 
 grep -qx 'ID=ubuntu' "$ROOT/etc/os-release" || die "this script supports Ubuntu only"
-log "Starting WAF update"
+info "Starting WAF update on Ubuntu"
 ensure_modules
 sync_waf
 install_update_hook
+info "WAF update finished"
