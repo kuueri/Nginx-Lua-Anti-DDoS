@@ -168,6 +168,8 @@ The WAF rules apply to all requests. A request that matches a rule gets `403`, b
 
 - It counts the `403` responses from the WAF for each client address. The WAF sends `403` only for a request with an attack payload, because the User-Agent blacklist is empty.
 - After 5 of them in 10 minutes, it bans the address for 1 hour.
+- Each later ban of the same address lasts twice as long as the one before: 2 hours, 4 hours, 8 hours, and so on, with no cap.
+  The ban count lives in the `waf_strikes` shared dict, so a reload keeps it and only an nginx restart clears it.
 - It does not count a `403` from the application, for example DSpace, or from a `return 403` in the site config.
 - It never bans private or loopback addresses, so it cannot ban a reverse proxy.
 - It never bans crawlers, AI agents, or Turnitin. These are User-Agents that contain `bot`, `crawl`, `spider`, `slurp`, `turnitin`, or `facebookexternalhit`, and the AI agent families.

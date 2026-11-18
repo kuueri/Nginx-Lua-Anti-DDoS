@@ -260,8 +260,10 @@ then
 	return
 end
 local hits = strikes:incr("hit:" .. ip, 1, 0, WINDOW)
-if hits and hits >= LIMIT then
-	strikes:set("ban:" .. ip, true, BAN)
+if hits == LIMIT then
+	local n = strikes:incr("bans:" .. ip, 1, 0) or 1
+	local ban = BAN * 2 ^ (n - 1)
+	strikes:set("ban:" .. ip, true, ban)
 	strikes:delete("hit:" .. ip)
-	ngx.log(ngx.WARN, "[WAF ban] ", ip, " banned for ", BAN, " s after ", hits, " blocked requests")
+	ngx.log(ngx.WARN, "[WAF ban] ", ip, " banned for ", ban, " s (ban ", n, ") after ", hits, " blocked requests")
 end

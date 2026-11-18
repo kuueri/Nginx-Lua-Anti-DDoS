@@ -171,6 +171,15 @@ now = now + 3599
 check(request(pub) == 403, "ban must last 1 hour")
 now = now + 2
 check(request(pub) == 200, "ban must end after 1 hour")
+for _, hours in ipairs({ 2, 4, 8, 16 }) do
+	for _ = 1, 5 do
+		request(pub, { status = 403 })
+	end
+	now = now + hours * 3600 - 1
+	check(request(pub) == 403, "repeat ban must last " .. hours .. " hours")
+	now = now + 2
+	check(request(pub) == 200, "repeat ban must end after " .. hours .. " hours")
+end
 
 local slow = "203.0.113.11"
 for _ = 1, 4 do
