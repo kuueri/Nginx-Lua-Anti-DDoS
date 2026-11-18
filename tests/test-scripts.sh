@@ -90,7 +90,7 @@ mkdir -p "$T/build/nginx-1.2.3"
 cp "$T/configure" "$T/build/nginx-1.2.3/configure"
 
 run() {
-	PATH="$T/bin:$PATH" ROOT="$R" URL="file://$T/upstream.lua" BUILD_DIR="${BUILD_DIR:-$T/build}" bash "$SCRIPTS/$1" 2>"$T/out.log"
+	PATH="$T/bin:$PATH" ROOT="$R" URL="file://$T/upstream.lua" BUILD_DIR="${BUILD_DIR:-$T/build}" bash "$SCRIPTS/$1" >"$T/out.log" 2>&1
 }
 
 secret() {
@@ -234,6 +234,14 @@ load_module $R/modules/ngx_http_lua_module.so;"
 	[ "$(grep -cx 'jit.off()' "$R/etc/nginx/lua/waf-local-overrides.lua")" -eq 1 ] || fail "jit.off() added twice"
 	SE_MODE=Enforcing SE_EXECMEM=on run "update-$platform.sh" || fail "update with httpd_execmem on exited non-zero: $(cat "$T/out.log")"
 	! grep -qx 'jit.off()' "$R/etc/nginx/lua/waf-local-overrides.lua" || fail "jit.off() kept after httpd_execmem was turned on"
+
+	# A command that fails without a die, here curl on a missing upstream file, still ends in an ERROR after the INFO line of its step.
+	mv "$T/upstream.lua" "$T/upstream.lua.away"
+	if run "update-$platform.sh"; then fail "update succeeded without the upstream file"; fi
+	mv "$T/upstream.lua.away" "$T/upstream.lua"
+	grep -A3 'INFO: Downloading upstream WAF' "$T/out.log" | grep -q 'ERROR: the step above failed with exit code' || fail "a failed curl did not end in an ERROR line: $(cat "$T/out.log")"
+	[ "$(grep -c 'ERROR:' "$T/out.log")" -eq 1 ] || fail "one failure printed more than one ERROR line: $(cat "$T/out.log")"
+	grep -q 'INFO: Starting WAF update' "$T/out.log" || fail "update did not report its start at INFO level"
 done
 
 # A hand-set secret from a manual setup carries over verbatim, sed metacharacters included.
@@ -241,6 +249,23 @@ manual='a/b&c\\d'
 printf 'localized_global.secret = "%s"\n' "$manual" >"$R/etc/nginx/lua/waf-local-overrides.lua"
 run "update-$platform.sh" || fail "update with a hand-set secret exited non-zero: $(cat "$T/out.log")"
 [ "$(secret)" = "$manual" ] || fail "hand-set secret not kept: '$(secret)'"
+
+# INFO and WARN go to stdout, and only ERROR goes to stderr.
+streams="$(bash -c 'source "$1/lib/log.sh"; info i; warn w; error e' _ "$SCRIPTS" 2>/dev/null)"
+if ! grep -q 'INFO: i' <<<"$streams" || ! grep -q 'WARN: w' <<<"$streams" || grep -q 'ERROR' <<<"$streams"; then
+	fail "INFO and WARN must go to stdout and ERROR must not: $streams"
+fi
+streams="$(bash -c 'source "$1/lib/log.sh"; info i; warn w; error e' _ "$SCRIPTS" 2>&1 >/dev/null)"
+[ "$streams" = "$(grep 'ERROR: e' <<<"$streams")" ] && [ -n "$streams" ] || fail "only ERROR may go to stderr: $streams"
+# WARN is yellow on a terminal, here a pseudo-terminal from Python's pty, and plain in a pipe or with NO_COLOR.
+yellow=$'\033[33m'
+warn_on_tty() {
+	# shellcheck disable=SC2016 # $1 expands in the inner bash, not here
+	python3 -I -c 'import pty, sys; pty.spawn(sys.argv[1:])' bash -c 'source "$1/lib/log.sh"; warn w' _ "$SCRIPTS"
+}
+[[ "$(bash -c 'source "$1/lib/log.sh"; warn w' _ "$SCRIPTS")" != *"$yellow"* ]] || fail "WARN is colored outside a terminal"
+[[ "$(warn_on_tty)" == *"$yellow"*"WARN: w"* ]] || fail "WARN is not yellow on a terminal: $(warn_on_tty | od -c | head -3)"
+[[ "$(NO_COLOR=1 warn_on_tty)" != *"$yellow"* ]] || fail "WARN is colored despite NO_COLOR"
 
 # deploy.sh ships the workspace scripts/, config/, and lua/ through a local ssh stub, replaces stale files, and installs.
 platform=deploy
@@ -256,20 +281,31 @@ exec sh -c "$cmd"
 EOF
 tee "$T/bin/sudo" >/dev/null <<'EOF'
 #!/bin/sh
+[ "$1" != -p ] || shift 2
 exec "$@"
 EOF
 printf '#!/bin/sh\n' >"$T/bin/chown"
 chmod +x "$T/bin/ssh" "$T/bin/sudo" "$T/bin/chown"
 cp -r "$SCRIPTS" "$SCRIPTS/../config" "$SCRIPTS/../lua" "$T/repo/"
 deploy() {
-	PATH="$T/bin:$PATH" ROOT="$R" URL="file://$T/upstream.lua" BUILD_DIR="$T/build" bash "$T/repo/scripts/deploy.sh" host 2>"$T/out.log"
+	PATH="$T/bin:$PATH" ROOT="$R" URL="file://$T/upstream.lua" BUILD_DIR="$T/build" bash "$T/repo/scripts/deploy.sh" host >"$T/out.log" 2>&1
 }
 deploy || fail "deploy exited non-zero: $(cat "$T/out.log")"
+# Each password prompt is announced, and every step reports at a level.
+grep -q 'INFO: Connecting to host over ssh; type the ssh password' "$T/out.log" || fail "deploy did not announce the ssh password prompt: $(cat "$T/out.log")"
+grep -q 'INFO: Running the installer as root on host; type the sudo password' "$T/out.log" || fail "deploy did not announce the sudo password prompt"
+grep -q 'INFO: Running install-deb.sh' "$T/out.log" || fail "deploy did not name the script it runs on the server: $(cat "$T/out.log")"
+grep -q 'INFO: Generating a per-server secret' "$T/out.log" || fail "install did not report the secret step"
+grep -q 'INFO: Deploy to host finished' "$T/out.log" || fail "deploy did not report success"
+! grep -vE '^\[[0-9]{2}:[0-9]{2}:[0-9]{2}\] (INFO|WARN|ERROR): ' "$T/out.log" | grep -q . || fail "deploy printed a line without a level: $(grep -vE '^\[[0-9:]{8}\] (INFO|WARN|ERROR): ' "$T/out.log")"
 [ ! -e "$R/opt/nginx-waf/config/stale" ] || fail "deploy kept a file deleted from the repo"
 cmp -s "$T/repo/config/nginx-waf.conf" "$R/opt/nginx-waf/config/nginx-waf.conf" || fail "deploy did not ship config/"
 [[ "$(secret)" =~ ^[0-9a-f]{64}$ ]] || fail "deploy did not run the installer"
 echo "localized_global.secret = 'unreadable'" >"$R/etc/nginx/lua/waf-local-overrides.lua"
 if deploy; then fail "deploy rotated a secret it could not read"; fi
+grep -q 'ERROR: WAF is not installed yet' "$T/out.log" || fail "deploy did not report the refused update as ERROR: $(cat "$T/out.log")"
+grep -q 'ERROR: the step above failed' "$T/out.log" || fail "deploy did not report its failed step: $(cat "$T/out.log")"
+! grep -q 'Deploy to host finished' "$T/out.log" || fail "deploy reported success after a failure"
 grep -q "'unreadable'" "$R/etc/nginx/lua/waf-local-overrides.lua" || fail "deploy overwrote an unreadable secret"
 
 echo "PASS"
