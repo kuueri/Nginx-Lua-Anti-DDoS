@@ -15,25 +15,6 @@ localized_global.remote_addr = "auto"
 -- Upstream's own advice for subrequest trouble is false, which only stops range-filter rules from matching by Content-Type; range filtering still runs.
 localized_global.content_type_fix = false
 
--- Upstream's automatic "I am Under Attack" mode rewrites master_switch on every request: 2 (no challenge) while at most 100 IPs are banned, 1 (challenge on every path, these included) above that.
--- Mode 3 and these paths therefore only apply if that rewrite does not run; during an attack only whitelisted User-Agents skip the challenge.
--- Upstream runs the WAF rules before this switch, so these paths still get every WAF_* table below.
--- Each entry is a Lua pattern matched against scheme://host/path?query, anchored to the path so that ?x=/oai/ cannot skip the challenge.
-localized_global.master_switch = 3
-localized_global.master_switch_custom_hosts = {
-	-- DSpace 6 OAI-PMH and REST
-	{ 2, "^https?://[^/]+/oai/" },
-	{ 2, "^https?://[^/]+/rest/" },
-	-- DSpace 7 REST and OAI-PMH
-	{ 2, "^https?://[^/]+/server/api/" },
-	{ 2, "^https?://[^/]+/server/oai/" },
-	-- WordPress REST
-	{ 2, "^https?://[^/]+/wp%-json/" },
-	-- SLiMS API and OAI-PMH
-	{ 2, "^https?://[^/]+/api/v1/" },
-	{ 2, "^https?://[^/]+/oai2?%.php" },
-}
-
 -- Upstream would block these User-Agents with 403 on every path, and waf-ban.lua counts every 403 toward a ban.
 -- Policy: crawlers, scrapers, AI agents, and Turnitin may access the sites with strict limits, and only attack payloads lead to a ban.
 -- So this empty table replaces upstream's default list (curl, python, ChatGPT, GPTBot, OAI-, empty User-Agent, ...), and a 403 then always means a WAF rule hit.
