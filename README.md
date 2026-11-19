@@ -266,19 +266,12 @@ The counters are in shared memory, so a restart of nginx sets them to zero.
 
 ### JavaScript challenge
 
-The JavaScript challenge is automatic. Upstream turns on the challenge for all paths when it bans more than 100 addresses.
-When upstream bans 100 or fewer addresses, no request gets the challenge.
+The JavaScript challenge is automatic. Upstream turns on the challenge for all paths when it bans 100 or more addresses.
+When upstream bans fewer than 100 addresses, no request gets the challenge.
 
 API clients and OAI-PMH harvesters are not browsers. They cannot solve the JavaScript challenge.
-`localized_global.master_switch_custom_hosts` in `config/waf-local-overrides.lua` lists the paths that skip the challenge:
-
-- DSpace: `/oai/`, `/rest/`, `/server/api/`, `/server/oai/`
-- WordPress: `/wp-json/`
-- SLiMS: `/api/v1/`, `/oai.php`, `/oai2.php`
-
-The WAF rules still apply to these paths. Only the challenge does not.
-To add a path, add an entry with the same form to that table.
-Upstream uses this list only while the challenge stays in mode 3. The automatic challenge during an attack ignores the list.
+During an attack, they get the challenge too, because no path skips it.
+Only the User-Agent whitelist skips the challenge, for Googlebot, Bingbot, and Turnitin.
 
 ### User-Agent lists
 
