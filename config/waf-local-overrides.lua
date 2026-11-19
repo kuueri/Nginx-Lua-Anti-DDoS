@@ -219,9 +219,10 @@ localized_global.WAF_query_string_Request_table = {
 	-- SQLi, time-based and error-based functions, matched only with their opening parenthesis so "sleep quality" passes.
 	-- substr, substring, and mid count only with two numeric arguments, the blind SQLi probe shape, so "Substring (computer science)" passes.
 	-- ascii( and ord( stay out, because titles such as "ASCII (...)" would match; the substr or mid call inside such a probe already matches.
+	-- MySQL reads an inline comment as a space, as in SLEEP/**/(5), so the tautology rule's possessive comment token may sit before the parenthesis.
 	{
 		"^.*$",
-		[[(?s).*(?<![a-z_])(?:(?:sleep|pg_sleep|benchmark|extractvalue|updatexml|load_file|group_concat|concat|concat_ws|name_const|unhex|ifnull|make_set)\s*\(|char\s*\(\s*\d|(?:substr(?:ing)?|mid)\s*\([^()]*,\s*\d+\s*,\s*\d+\s*\)).*]],
+		[[(?s).*(?<![a-z_])(?:(?:sleep|pg_sleep|benchmark|extractvalue|updatexml|load_file|group_concat|concat|concat_ws|name_const|unhex|ifnull|make_set)(?:\s|/\*[^*]*+\*/)*+\(|char(?:\s|/\*[^*]*+\*/)*+\(\s*\d|(?:substr(?:ing)?|mid)(?:\s|/\*[^*]*+\*/)*+\([^()]*,\s*\d+\s*,\s*\d+\s*\)).*]],
 	},
 	-- SQLi, a quote closed by a comment or terminator, such as admin'-- or admin'#.
 	{
@@ -235,14 +236,16 @@ localized_global.WAF_query_string_Request_table = {
 		[[(?s).*(?<![a-z_])order(?:\s|/\*[^*]*+\*/)++by(?:\s|/\*[^*]*+\*/)++\d+(?:\s*,\s*\d+)*+(?:\s|/\*[^*]*+\*/)*+(?:--|#|/\*|;).*]],
 	},
 	-- SQLi, subquery.
+	-- An inline comment counts as a space, and MySQL runs the body of a versioned comment, so (/*!50000SELECT*/1) and (/*!50000 SELECT*/1) open a subquery too.
 	{
 		"^.*$",
-		[[(?s).*\(\s*select(?![a-z0-9_]).*]],
+		[[(?s).*\((?:(?:\s|/\*[^*]*+\*/)*+select|\s*+/\*!\d*+\s*+select)(?![a-z0-9_]).*]],
 	},
 	-- SQLi, schema probing and file access.
+	-- An inline comment counts as a space, as in INTO/**/OUTFILE or USER/**/().
 	{
 		"^.*$",
-		[[(?s).*(?:information_schema|mysql\.user|pg_catalog|pg_shadow|sqlite_master|@@(?:version|datadir|hostname|basedir)|into\s+(?:out|dump)file|(?<![a-z_])(?:version|database|user|current_user|schema)\s*\(\s*\)|dbms_pipe|utl_http|utl_inaddr).*]],
+		[[(?s).*(?:information_schema|mysql\.user|pg_catalog|pg_shadow|sqlite_master|@@(?:version|datadir|hostname|basedir)|into(?:\s|/\*[^*]*+\*/)+(?:out|dump)file|(?<![a-z_])(?:version|database|user|current_user|schema)(?:\s|/\*[^*]*+\*/)*+\(\s*\)|dbms_pipe|utl_http|utl_inaddr).*]],
 	},
 	-- SQLi through sort parameters, a common WordPress plugin hole: only word characters, spaces, comma, dot, and dash pass.
 	-- The name is grouped because upstream wraps it as ^(?i)<name>$.
@@ -345,9 +348,10 @@ localized_global.WAF_Header_Request_table = {
 		[[(?i)(?:<|%3c)/?(?:script|iframe|svg|img|body|object|embed|style|link|meta|base|form|input|details|math|video|audio)(?![a-z0-9_-])|^(?>.*?(?:<|%3c)[a-z]).*?(?:[\s/"'\x60+]|%2[0f27])on[a-z]{3,}\s*(?:=|%3d)]],
 	},
 	-- SQLi through headers that apps store or log: UNION SELECT and time-based or error-based functions.
+	-- An inline comment may sit before the parenthesis, as in SLEEP/**/(5), as in the query rule.
 	{
 		"^(?:cookie|referer|user-agent|x-forwarded-for)$",
-		[[(?i)^(?>.*?(?<![a-z_])union(?![a-z0-9_])).*(?<![a-z_])select(?![a-z0-9_])|(?<![a-z_])(?:sleep|pg_sleep|benchmark|extractvalue|updatexml)\s*\(]],
+		[[(?i)^(?>.*?(?<![a-z_])union(?![a-z0-9_])).*(?<![a-z_])select(?![a-z0-9_])|(?<![a-z_])(?:sleep|pg_sleep|benchmark|extractvalue|updatexml)(?:\s|/\*[^*]*+\*/)*+\(]],
 	},
 	{
 		"^x-forwarded-host$",
