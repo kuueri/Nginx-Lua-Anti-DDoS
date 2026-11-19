@@ -536,42 +536,6 @@ for kind, list in pairs(rules) do
 	end
 end
 
--- Upstream's check_master_switch matches each bypass pattern with string.find against scheme://host/path?query, so plain Lua runs it here.
-local bypass_cases = {
-	{ true, "https://repo.example.ac.id/oai/request?verb=Identify" },
-	{ true, "https://repo.example.ac.id/rest/items" },
-	{ true, "https://repo.example.ac.id/server/api/core/items" },
-	{ true, "https://repo.example.ac.id/server/oai/request?verb=ListRecords" },
-	{ true, "https://wp.example.com/wp-json/wp/v2/posts" },
-	{ true, "http://lib.example.ac.id/api/v1/biblio" },
-	{ true, "http://lib.example.ac.id/oai2.php?verb=Identify" },
-	{ false, "https://repo.example.ac.id/" },
-	{ false, "https://repo.example.ac.id/handle/123456789/1" },
-	{ false, "https://repo.example.ac.id/handle/1?next=/oai/" },
-	{ false, "https://wp.example.com/?rest_route=/wp-json/" },
-}
-local bypass_used = {}
-for _, c in ipairs(bypass_cases) do
-	local hit = false
-	for _, h in ipairs(g.master_switch_custom_hosts) do
-		if c[2]:find(h[2]) then
-			hit = h[1] == 2
-			bypass_used[h] = true
-			break
-		end
-	end
-	if hit ~= c[1] then
-		failed = failed + 1
-		print(string.format("FAIL bypass %q: expected %s", c[2], c[1] and "bypass" or "challenge"))
-	end
-end
-for _, h in ipairs(g.master_switch_custom_hosts) do
-	if not bypass_used[h] then
-		failed = failed + 1
-		print(string.format("FAIL bypass pattern matches no case: %s", h[2]))
-	end
-end
-
 local body_skip_cases = {
 	{ true, "/wp-admin/post.php" },
 	{ true, "/wp-json/wp/v2/posts/12" },
@@ -640,7 +604,10 @@ for _, site in ipairs(g.anti_ddos_table()) do
 	)
 end
 
-assert(g.master_switch == 3, "master_switch must be 3 so the bypass list applies")
+assert(
+	g.master_switch == nil and g.master_switch_custom_hosts == nil,
+	"the override must not set the inactive challenge mode; upstream's automatic mode governs"
+)
 assert(g.content_type_fix == false, "content_type_fix must be false, or every request reaches the backend twice")
 assert(#g.WAF_POST_Request_table == 0, "WAF_POST_Request_table must stay empty")
 if failed > 0 then
