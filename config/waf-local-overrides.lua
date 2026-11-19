@@ -317,9 +317,10 @@ localized_global.WAF_query_string_Request_table = {
 	},
 	-- SSRF, a URL to a loopback, private, link-local, or cloud metadata address, also as hex, decimal, octal, an IPv6 literal, or behind user@, or a scheme that only internal services speak.
 	-- Public URLs, such as https://doi.org/... in a redirect parameter, pass.
+	-- A trailing dot, a 1 to 3 part IPv4 form such as 127.1 or 0x7f.1, and the bare address 0 reach the same host, while DNS names that resolve to private addresses stay out of reach.
 	{
 		"^.*$",
-		[[(?s).*(?:(?:gopher|dict|file|ldaps?|tftp|netdoc)://|jar:(?:https?|file|ftp)://|://(?>[^/@?#\s]*@)?(?:\[[0-9a-f:.%]+\]|(?:localhost|127(?:\.\d+){3}|0\.0\.0\.0|0x[0-9a-f]+|\d{8,10}|0\d+(?:\.\d+){3}|10(?:\.\d+){3}|192\.168(?:\.\d+){2}|172\.(?:1[6-9]|2\d|3[01])(?:\.\d+){2}|169\.254(?:\.\d+){2}|metadata\.google\.internal|100\.100\.100\.200)(?:[:/?#]|$))).*]],
+		[[(?s).*(?:(?:gopher|dict|file|ldaps?|tftp|netdoc)://|jar:(?:https?|file|ftp)://|://(?>[^/@?#\s]*@)?(?:\[[0-9a-f:.%]+\]|(?:localhost\.?|127(?:\.\d+){1,3}\.?|0\.0\.0\.0\.?|0x[0-9a-f]+(?:\.[0-9a-f]+)*\.?|\d{8,10}\.?|0\d*(?:\.\d+){0,3}\.?|10(?:\.\d+){1,3}\.?|192\.168(?:\.\d+){1,2}\.?|172\.(?:1[6-9]|2\d|3[01])(?:\.\d+){1,2}\.?|169\.254(?:\.\d+){1,2}\.?|metadata\.google\.internal\.?|100\.100\.100\.200\.?)(?:[:/?#]|$))).*]],
 	},
 	-- Java deserialization, a serialized object as base64 (rO0AB), hex (aced0005), or raw bytes, or a JSON gadget type.
 	-- The object must start the value or follow a non-base64 character, so an arbitrary token, such as an OAI resumptionToken, cannot match by chance.
