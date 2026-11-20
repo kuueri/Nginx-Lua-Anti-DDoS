@@ -105,11 +105,19 @@ local function log_hit(what, block, reason)
 	)
 end
 
+local function skipped(name)
+	for _, skip in ipairs(localized_global.WAF_cookie_skip or {}) do
+		if name:find(skip) then
+			return true
+		end
+	end
+end
+
 local function cookie_fields()
 	local fields = {}
 	for pair in (ngx.var.http_cookie or ""):gmatch("[^;]+") do
 		local name, value = pair:match("^%s*([^=]*)=?(.*)$")
-		if value ~= "" then
+		if value ~= "" and not skipped(name) then
 			fields[#fields + 1] = { name, ngx.unescape_uri(value) }
 		end
 	end

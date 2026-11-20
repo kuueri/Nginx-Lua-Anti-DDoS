@@ -383,6 +383,9 @@ localized_global.WAF_body_skip = {
 -- Cookies carry tokens, base64, and JSON, and a JSON cookie such as {"color":"#ffffff"} already matches the SQLi comment rule, so false only logs "Would block (log only) Request cookie prohibited" for 7 days of tuning, like the body check.
 -- true answers a hit with 403, which counts toward a ban.
 localized_global.WAF_cookie_block = false
+-- Lua patterns for cookie names whose values waf-ban.lua does not check, because they carry opaque tokens; upstream never reads this setting.
+-- sl-session is the base64 session token of a SafeLine front proxy, and about 1 in 2,000 values, such as one holding 5Or3 before its == padding, matches the tautology rule.
+localized_global.WAF_cookie_skip = { "^sl%-session$" }
 
 -- Upstream's default anti_ddos_table closes the connection and bans the address for 24 hours on PATCH, PUT, DELETE, CONNECT, OPTIONS, or TRACE.
 -- Readers send OPTIONS too: Microsoft Office and some browsers ask with OPTIONS before they open a bitstream link, so OPTIONS leaves that list and reaches the application again.
