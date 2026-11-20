@@ -1,6 +1,8 @@
 local LIMIT = 5
 local WINDOW = 600
 local BAN = 3600
+local CRAWLER_LIMIT = 50
+local CRAWLER_WINDOW = 600
 local AI_LIMIT = 10
 local AI_WINDOW = 60
 local BODY_LIMIT = 131072
@@ -262,16 +264,17 @@ if
 	or ip:find("^172%.3[01]%.")
 	or ip == "::1"
 	or ip:find("^f[cd]")
-	or find(AI_AGENTS)
-	or find(CRAWLERS)
 then
 	return
 end
-local hits = strikes:incr("hit:" .. ip, 1, 0, WINDOW)
-if hits == LIMIT then
+local crawler = find(AI_AGENTS) or find(CRAWLERS)
+local key = (crawler and "crawl:" or "hit:") .. ip
+local hits = strikes:incr(key, 1, 0, crawler and CRAWLER_WINDOW or WINDOW)
+if hits == (crawler and CRAWLER_LIMIT or LIMIT) then
 	local n = strikes:incr("bans:" .. ip, 1, 0) or 1
 	local ban = BAN * 2 ^ (n - 1)
 	strikes:set("ban:" .. ip, true, ban)
 	strikes:delete("hit:" .. ip)
+	strikes:delete("crawl:" .. ip)
 	ngx.log(ngx.WARN, "[WAF ban] ", ip, " banned for ", ban, " s (ban ", n, ") after ", hits, " blocked requests")
 end
