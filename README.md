@@ -186,7 +186,7 @@ Upstream's own POST table stays empty.
 When a POST rule exists, upstream reads the whole body of each POST request into memory, uploads included.
 
 The rules do not check uploaded files.
-Instead, a request for a script in an upload directory (`wp-content/uploads`, `/files`, `/repository`) gets `403`, so an uploaded webshell cannot run.
+Instead, a request for a script in an upload directory (`wp-content/uploads`, `/files`, `/repository`, `/images/docs`, `/images/persons`) gets `403`, so an uploaded webshell cannot run.
 The script extensions are `php` (also `php5` and similar), `phtml`, `phar`, `jsp`, `jspx`, `asp`, `aspx`, `cgi`, `pl`, and `sh`, also in double extensions such as `shell.php.jpg`.
 
 CSRF checks need the `Origin` header, so the rules do not cover CSRF.

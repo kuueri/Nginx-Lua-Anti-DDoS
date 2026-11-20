@@ -37,7 +37,7 @@ localized_global.user_agent_whitelist_table = {
 
 -- Upstream matches these case-insensitively and unanchored against the raw request path, before nginx decodes or normalizes it.
 -- nginx and Tomcat decode %XX before they pick a file, so waf-ban.lua matches these rules again in the rewrite phase against $uri, the path after nginx decodes it and resolves "..".
--- So /%2eenv and shell%2ephp are blocked too, and \.\./ only ever matches the raw path, where ".." is not resolved yet.
+-- So /%2eenv and shell%2ephp are blocked too, and the traversal rule only ever matches the raw path, where ".." is not resolved yet.
 localized_global.WAF_URI_Request_table = {
 	{
 		"^.*$",
@@ -74,13 +74,14 @@ localized_global.WAF_URI_Request_table = {
 		"^.*$",
 		[[composer\.lock]],
 	},
-	-- Upload directories of WordPress (wp-content/uploads) and SLiMS (files, repository): a script there can only be an uploaded webshell.
+	-- Upload directories of WordPress (wp-content/uploads) and SLiMS (files, repository, images/docs, images/persons): a script there can only be an uploaded webshell.
+	-- Only SLiMS's two image upload directories count, because themes keep scripts such as timthumb.php under other images/ directories.
 	-- Upstream never reads upload bodies, so this rule keeps such a file from running, with double extensions such as shell.php.jpg, path info such as x.jpg/y.php, and Tomcat's shell.jsp;.png.
 	-- The extension must end the path or be followed by . ; / or %, so names such as report.plan.pdf pass; % stays last in the class, because upstream turns %. into ".".
 	-- ^(?>...) locks the first upload directory, so a path that repeats it stays a linear scan.
 	{
 		"^.*$",
-		[[^(?>.*?(?:wp-content/uploads|/repository|/files)/).*?\.(?:php\d?|phtml|phar|jspx?|aspx?|cgi|pl|sh)(?:[./;%]|$)]],
+		[[^(?>.*?(?:wp-content/uploads|/repository|/files|/images/(?:docs|persons))/).*?\.(?:php\d?|phtml|phar|jspx?|aspx?|cgi|pl|sh)(?:[./;%]|$)]],
 	},
 	{
 		"^.*$",
@@ -108,29 +109,30 @@ localized_global.WAF_URI_Request_table = {
 		[[ucnode\.inc\.php]],
 	},
 	-- Installer directory or script only, so content paths such as /installing-slims/ still pass.
+	-- These directory rules also match the bare name at the end of the path or before ";", because Tomcat drops ";x" and serves /jolokia;x as /jolokia, while /solar-energy/ still passes.
 	{
 		"^.*$",
-		"/install[/.]",
+		[[/install(?:[/.;]|$)]],
 	},
 	{
 		"^.*$",
-		"/upgrade/",
+		"/upgrade(?:[/;]|$)",
 	},
 	{
 		"^.*$",
-		"/solr/",
+		"/solr(?:[/;]|$)",
 	},
 	{
 		"^.*$",
-		"/jolokia/",
+		"/jolokia(?:[/;]|$)",
 	},
 	{
 		"^.*$",
-		"/manager/",
+		"/manager(?:[/;]|$)",
 	},
 	{
 		"^.*$",
-		"/host-manager/",
+		"/host-manager(?:[/;]|$)",
 	},
 	-- WordPress: xmlrpc.php (DDoS pingback amplification + login brute-force)
 	-- Jetpack talks to WordPress.com through xmlrpc.php, so drop this rule on sites that use it.
@@ -146,21 +148,21 @@ localized_global.WAF_URI_Request_table = {
 	-- Java/DSpace: servlet internals must never be web-served
 	{
 		"^.*$",
-		"/WEB-INF/",
+		"/WEB-INF(?:[/;]|$)",
 	},
 	{
 		"^.*$",
-		"/META-INF/",
+		"/META-INF(?:[/;]|$)",
 	},
 	-- Spring Boot / DSpace: management endpoints must not be public
 	{
 		"^.*$",
-		"/actuator/",
+		"/actuator(?:[/;]|$)",
 	},
-	-- Generic path traversal on the raw (un-normalized) URI
+	-- Generic path traversal on the raw (un-normalized) URI, also with %2e for a dot and %2f, %5c, or \ for the slash, which a backend that gets the raw path decodes.
 	{
 		"^.*$",
-		[[\.\./]],
+		[[(?:\.|%2e){2}(?:/|%2f|%5c|\\)]],
 	},
 	-- Tomcat drops ";params" from every path segment and resolves "..;" as "..", while nginx does neither.
 	-- So /xmlui/..;/manager/html or /manager;x/html reach Tomcat paths that the rules above and nginx locations never see.
