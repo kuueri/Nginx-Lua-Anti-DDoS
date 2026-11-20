@@ -219,11 +219,12 @@ The WAF rules apply to all requests. A request that matches a rule gets `403`, b
   The ban count is in the `waf_strikes` shared dict, so a reload keeps it and only an nginx restart clears it.
 - It does not count a `403` from the application, for example DSpace, or from a `return 403` in the site config.
 - It never bans private or loopback addresses, so it cannot ban a reverse proxy.
-- It never bans crawlers, AI agents, or Turnitin. These are User-Agents that contain `bot`, `crawl`, `spider`, `slurp`, `turnitin`, or `facebookexternalhit`, and the AI agent families.
-  A crawler can follow a link with an attack payload that an attacker put on another site. The WAF rejects that request with `403`, but does not ban the crawler.
+- It bans crawlers, AI agents, and Turnitin only after 50 of them in 10 minutes. These are User-Agents that contain `bot`, `crawl`, `spider`, `slurp`, `turnitin`, or `facebookexternalhit`, and the AI agent families.
+  A crawler can follow a link with an attack payload that an attacker put on another site. The WAF rejects that request with `403`, and a few such links do not ban the crawler.
+  Any client can send a crawler User-Agent, so the higher limit stops an attacker who uses one from probing the rules without end.
 - It bans generic HTTP clients, for example `curl` and `python-requests`, when they send attack payloads.
 
-To change these numbers, edit `LIMIT`, `WINDOW`, and `BAN` in `config/waf-ban.lua`.
+To change these numbers, edit `LIMIT`, `WINDOW`, `BAN`, `CRAWLER_LIMIT`, and `CRAWLER_WINDOW` in `config/waf-ban.lua`.
 
 Upstream bans an address for 24 hours for these causes:
 
