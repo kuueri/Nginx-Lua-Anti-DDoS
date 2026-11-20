@@ -168,6 +168,7 @@ Upstream checks only the query values.
 - The name of each query argument. A hit gets `403`.
 - Each cookie value, after `waf-ban.lua` decodes it as PHP does.
   With `WAF_cookie_block = false`, a hit only writes a `Would block (log only)` line, because cookies often carry JSON or tokens.
+  `WAF_cookie_skip` lists the cookie names whose values are not checked, for example the `sl-session` token of a SafeLine proxy.
 - The request body, up to 128 KB:
     - each urlencoded field
     - each multipart field that is not a file
