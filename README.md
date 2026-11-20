@@ -173,9 +173,9 @@ Upstream checks only the query values.
 - The request body, up to 128 KB:
     - each urlencoded field
     - each multipart field that is not a file
-    - a JSON body, as one text
+    - each JSON value, with the rules for its object key; JSON that does not parse, or that nests deeper than 100 levels or holds more than 1000 values, as one text
 
-A body with more than 1000 fields gets `413`.
+A urlencoded or multipart body with more than 1000 fields gets `413`.
 A urlencoded or JSON body larger than 128 KB also gets `413`.
 A multipart body larger than 128 KB is an upload, and `waf-ban.lua` does not check it.
 

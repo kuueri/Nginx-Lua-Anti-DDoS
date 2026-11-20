@@ -387,9 +387,10 @@ localized_global.WAF_Header_Request_table = {
 localized_global.WAF_POST_Request_table = {}
 
 -- waf-ban.lua checks request bodies in the rewrite phase with WAF_query_string_Request_table; upstream never reads these two settings.
--- It checks each urlencoded field, each multipart field without a filename= parameter (PHP's test for a file), and a JSON body as one text after it decodes \uXXXX escapes, because no JSON library is built in.
+-- It checks each urlencoded field, each multipart field without a filename= parameter (PHP's test for a file), and each JSON value under its innermost object key, unquoted so that {"color":"#ffffff"} passes, with its own parser because no JSON library is built in.
+-- JSON that does not parse, nests deeper than 100 levels, or holds more than 1000 values is checked as one text after \u00XX escapes are decoded.
 -- It reads up to 128 KB, where every query rule stays clear of the PCRE match limit even without PCRE JIT; 1 MB values hit that limit.
--- A larger urlencoded or JSON body, or one with more than 1000 fields, gets 413, which never counts toward a ban; a larger multipart body is an upload and stays unchecked.
+-- A larger urlencoded or JSON body, or a urlencoded or multipart body with more than 1000 fields, gets 413, which never counts toward a ban; a larger multipart body is an upload and stays unchecked.
 -- false only logs "Would block (log only) Request body prohibited" for 7 days of tuning; true answers a hit with 403, which counts toward a ban.
 localized_global.WAF_body_block = false
 -- Lua patterns for $uri, the decoded path, whose bodies stay unchecked, because editors save posts there and HTML or SQL words are normal content.

@@ -50,6 +50,80 @@ local function json_text(s)
 	return (s:gsub("\\([nrt])", { n = "\n", r = "\r", t = "\t" }):gsub("\\(.)", "%1"))
 end
 
+local function json_fields(body)
+	local fields, pos = {}, 1
+	local function skip()
+		pos = body:find("[^ \t\r\n]", pos) or #body + 1
+	end
+	local function str()
+		local at = pos + 1
+		while true do
+			local q = body:find('["\\]', at)
+			if not q then
+				return
+			end
+			if body:byte(q) == 34 then
+				local s = json_text(body:sub(pos + 1, q - 1))
+				pos = q + 1
+				return s
+			end
+			at = q + 2
+		end
+	end
+	local value
+	local function members(key, depth, close)
+		pos = pos + 1
+		skip()
+		if body:sub(pos, pos) == close then
+			pos = pos + 1
+			return true
+		end
+		local d
+		repeat
+			local k = key
+			if close == "}" then
+				skip()
+				k = body:sub(pos, pos) == '"' and str()
+				skip()
+				if not k or body:sub(pos, pos) ~= ":" then
+					return
+				end
+				pos = pos + 1
+			end
+			if not value(k, depth + 1) then
+				return
+			end
+			skip()
+			d = body:sub(pos, pos)
+			pos = pos + 1
+		until d ~= ","
+		return d == close
+	end
+	function value(key, depth)
+		skip()
+		local c = body:sub(pos, pos)
+		if depth > 100 then
+			return
+		elseif c == "{" then
+			return members(key, depth, "}")
+		elseif c == "[" then
+			return members(key, depth, "]")
+		end
+		local s = c == '"' and str() or body:match("^[%w.+-]+", pos)
+		if not s then
+			return
+		elseif c ~= '"' then
+			pos = pos + #s
+		end
+		fields[#fields + 1] = { key, s }
+		return #fields <= BODY_FIELDS
+	end
+	if value("", 0) then
+		skip()
+		return pos > #body and fields or nil
+	end
+end
+
 local function multipart_fields(body, ctype)
 	local at = ctype:find("boundary", 1, true) or ctype:lower():find("boundary", 1, true)
 	local value = at and ctype:sub(at):match("=(.*)")
@@ -166,7 +240,7 @@ local function body_hit(uri)
 			elseif kind == "multipart" then
 				fields = multipart_fields(body, ctype) or { { "", body } }
 			else
-				fields = { { "", json_text(body) } }
+				fields = json_fields(body) or { { "", json_text(body) } }
 			end
 			if #fields > BODY_FIELDS then
 				return 413, "over " .. BODY_FIELDS .. " fields"
@@ -202,16 +276,18 @@ if ngx.get_phase() == "rewrite" then
 	local uri = ngx.var.uri
 	local url = ngx.var.scheme .. "://" .. ngx.var.host .. ngx.var.request_uri
 	for i, rule in ipairs(localized_global.WAF_URI_Request_table) do
-		if
-			ngx.re.find(url, "^(?i)" .. rule[1]:gsub("[%^%$]", "") .. "$", "jo")
-			and ngx.re.find(uri, "(?i)" .. rule[2], "jo")
-		then
+		local hit, _, err = ngx.re.find(url, "^(?i)" .. rule[1]:gsub("[%^%$]", "") .. "$", "jo")
+		if hit or err then
+			hit, _, err = ngx.re.find(uri, "(?i)" .. rule[2], "jo")
+		end
+		if hit or err then
 			ngx.log(
 				ngx.STDERR,
 				"[WAF] Blocked Request URI prohibited after decoding: ",
 				ngx.var.request_uri,
 				" (WAF_URI_Request_table rule ",
 				i,
+				err and ", " .. err or "",
 				")"
 			)
 			return ngx.exit(ngx.HTTP_FORBIDDEN)

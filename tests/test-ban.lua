@@ -29,11 +29,13 @@ localized_global = {
 	WAF_URI_Request_table = {
 		{ "^.*$", [[/xmlrpc\.php]] },
 		{ [[^https://other\.example/.*$]], "/private/" },
+		{ "^.*$", "/MATCHLIMIT/" },
 	},
 	WAF_query_string_Request_table = {
 		{ "^.*$", ".*union.*" },
 		{ "order", ".*;.*" },
 		{ "^.*$", ".*MATCHLIMIT.*" },
+		{ "^.*$", '.*"#.*' },
 	},
 	WAF_body_block = true,
 	WAF_body_skip = { "^/wp%-admin/post%.php$" },
@@ -322,6 +324,7 @@ for i = 1, 5 do
 end
 check(request(encoded) == 403, "5 hits on the decoded path must ban")
 check(request("203.0.113.61", { uri = "/xmlrpc.html" }) == 200, "a decoded path that matches no rule must pass")
+check(request("203.0.113.62", { uri = "/boom" }) == 403, "a regex error on the decoded path must block")
 check(request("203.0.113.61", { uri = "/private/x" }) == 200, "a URI rule for another host must not apply")
 check(
 	request("203.0.113.61", { host = "other.example", uri = "/private/x" }) == 403,
@@ -354,6 +357,40 @@ check(
 	"a JSON body must be checked after its \\u escapes are decoded"
 )
 check(body({ ctype = "application/json", body = '{"q":"hello"}' }) == 200, "a clean JSON body must pass")
+check(
+	body({ ctype = "application/json", body = '{"color":"#ffffff","n":-1.5e3,"ok":true,"z":null,"e":{},"a":[]}' })
+		== 200,
+	"JSON values must be checked without the quotes around them"
+)
+check(
+	body({ ctype = "application/json", body = '{"order":"title;drop"}' }) == 403,
+	"a rule for a field name must apply to the JSON value of that key"
+)
+check(
+	body({ ctype = "application/json", body = '{"a":["ok",{"q":"x\\"un\\u0069on\\""}]}' }) == 403,
+	"a nested JSON string with escapes must be checked"
+)
+check(body({ ctype = "application/json", body = '{"x union y":1}' }) == 403, "a JSON key with a payload must get 403")
+check(
+	body({ ctype = "application/json", body = '{"q":"un\\u0069on"' }) == 403,
+	"malformed JSON must be checked as one text"
+)
+check(
+	body({ ctype = "application/json", body = '{"q":"#"} "#' }) == 403,
+	"JSON with trailing data must be checked as one text"
+)
+check(
+	body({ ctype = "application/json", body = ("["):rep(101) .. '"#"' .. ("]"):rep(101) }) == 403,
+	"JSON nested deeper than 100 levels must be checked as one text"
+)
+check(
+	body({ ctype = "application/json", body = "[" .. ("1,"):rep(1000) .. "1]" }) == 200,
+	"JSON with more than 1000 values must be checked as one text, not refused"
+)
+check(
+	body({ ctype = "application/json", body = '["#",' .. ("1,"):rep(1000) .. "1]" }) == 403,
+	"JSON with more than 1000 values must still be checked"
+)
 check(
 	body({ ctype = "text/plain", body = "q=union" }) == 200,
 	"a body type that PHP and Tomcat do not parse is not checked"
