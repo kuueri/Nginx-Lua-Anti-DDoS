@@ -38,6 +38,7 @@ localized_global = {
 	WAF_body_block = true,
 	WAF_body_skip = { "^/wp%-admin/post%.php$" },
 	WAF_cookie_block = true,
+	WAF_cookie_skip = { "^sl%-session$" },
 }
 local temps = {}
 
@@ -405,6 +406,14 @@ check(
 check(
 	request("198.51.100.216", { cookie = "q=union", internal = true }) == 200,
 	"an internal redirect must not check cookies again"
+)
+check(
+	request("198.51.100.218", { cookie = "sl-session=union" }) == 200,
+	"a cookie in WAF_cookie_skip must not be checked"
+)
+check(
+	request("198.51.100.219", { cookie = "sl-session=x; sl-sessionx=union" }) == 403,
+	"a cookie not in WAF_cookie_skip must still be checked"
 )
 localized_global.WAF_cookie_block = false
 check(request("198.51.100.217", { cookie = "q=union" }) == 200, "cookie log-only mode must not block")

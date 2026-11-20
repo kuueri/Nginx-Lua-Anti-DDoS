@@ -565,6 +565,33 @@ for _, p in ipairs(g.WAF_body_skip) do
 	end
 end
 
+local cookie_skip_cases = {
+	{ true, "sl-session" },
+	{ false, "sl-sessionx" },
+	{ false, "xsl-session" },
+	{ false, "JSESSIONID" },
+}
+local cookie_skip_used = {}
+for _, c in ipairs(cookie_skip_cases) do
+	local hit = false
+	for _, p in ipairs(g.WAF_cookie_skip or {}) do
+		if c[2]:find(p) then
+			hit = true
+			cookie_skip_used[p] = true
+		end
+	end
+	if hit ~= c[1] then
+		failed = failed + 1
+		print(string.format("FAIL cookie skip %q: expected %s", c[2], c[1] and "skip" or "check"))
+	end
+end
+for _, p in ipairs(g.WAF_cookie_skip or {}) do
+	if not cookie_skip_used[p] then
+		failed = failed + 1
+		print(string.format("FAIL cookie skip pattern matches no case: %s", p))
+	end
+end
+
 -- Upstream builds its default anti_ddos_table in the worker before it calls the override, so both run here against the real upstream source.
 local upstream = assert(io.open(arg[0]:gsub("[^/]*$", "") .. "../lua/anti_ddos_challenge.lua")):read("a")
 local from = assert(
