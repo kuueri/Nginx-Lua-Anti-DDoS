@@ -54,6 +54,16 @@ UNITS = [
     b"/images/docs/",
     b"%2e",
     b".%2e",
+    b"http://a@",
+    b"://127.0x",
+    b"file:",
+    b'"j\t',
+    b'"on',
+    b"<?",
+    b"<!",
+    b"${t",
+    b";cat a/",
+    b"&cat a/b.",
 ]
 ALPHABET = b"a'\"<>=(){}$:;|&/.-_ 01on\n%,"
 CANARY = rb"^(?i)(?s).*\$\{(?:jndi|[^}]*:[^}]*\}).*$"

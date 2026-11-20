@@ -273,27 +273,30 @@ localized_global.WAF_query_string_Request_table = {
 	},
 	-- XSS, an event handler after any tag, such as <x onclick=...>; (?>...) locks the first tag.
 	-- A quote also opens it, because a quote can close the attribute an app echoes the value into, so a handler can follow without any tag.
+	-- The handler may also follow that quote directly, as in "onfocus=alert(1), which the second branch misses because its locked quote is the only delimiter.
 	{
 		"(?s).*",
-		[[(?s)(?>.*?(?:<[a-z]|["'\x60])).*?[\s/"'\x60]on[a-z]{3,}\s*=.*]],
+		[[(?s)(?:.*["'\x60]on[a-z]{3,}\s*=|(?>.*?(?:<[a-z]|["'\x60])).*?[\s/"'\x60]on[a-z]{3,}\s*=).*]],
 	},
 	-- XSS, a script URL at the start of a value that a page may put into href or src.
 	-- The scheme must be followed by code, such as alert( or //, so a title search such as "JavaScript: The Good Parts" passes.
 	-- The scheme may also follow a quote, "=", "(", "<", or ">", inside an attribute such as <a href="javascript:...">.
 	-- A space is no such delimiter, so a search such as Crockford JavaScript: "the good parts" passes.
 	-- The two-way alternation keeps the scan linear; the optional form (?:.*[...])?[\x00-\x20]* cost 35 ms on 8 KB of spaces.
+	-- Browsers drop tabs and line breaks inside a URL, so java\tscript: runs too, and the scheme allows them between its letters.
 	{
 		"(?s).*",
-		[[(?s)(?:[\x00-\x20]*|.*["'\x60=(<>])(?:(?:javascript|vbscript|livescript)\s*:\s*(?:[^\s\w]|[\w$.]+\s*[(\x60=])|data\s*:\s*(?:text/html|image/svg[+\s]xml|application/(?:x-)?javascript)).*]],
+		[[(?s)(?:[\x00-\x20]*+|.*["'\x60=(<>])(?:(?:j[\t\n\r]*+a[\t\n\r]*+v[\t\n\r]*+a|v[\t\n\r]*+b|l[\t\n\r]*+i[\t\n\r]*+v[\t\n\r]*+e)[\t\n\r]*+s[\t\n\r]*+c[\t\n\r]*+r[\t\n\r]*+i[\t\n\r]*+p[\t\n\r]*+t\s*:\s*(?:[^\s\w]|[\w$.]+\s*[(\x60=])|data\s*:\s*(?:text/html|image/svg[+\s]xml|application/(?:x-)?javascript)).*]],
 	},
 	-- Command injection, a shell separator or substitution, a common command, and then what only a shell line has next: its end, an operator, an option, a path, a digit, a quote, a URL, or a host.
 	-- So titles such as "Animal behaviour; cat breeds" or "Table tennis; ping pong" pass.
 	-- A single & also starts the next command, but titles use it too, as in "R & Python", "Anxiety & sleep", or "P&ID".
 	-- So after a single &, which leaves group 1 unset, the conditional (?(1)...|...) asks for a stronger tail: a pipe or redirect, an option, a path, a quote, a URL, or a host.
 	-- That lets "x&id" through, while "x&id|..." or "x&cat /etc/passwd" still match.
+	-- A relative path counts only with a file extension, as in ;cat config/database.php, so "Dogs; cat food/treats" passes.
 	{
 		"(?s).*",
-		[[(?s).*(?:([;|\n\x60]|&&|\$\()|&)\s*(?:(?:/usr)?(?:/local)?/s?bin/)?(?:id|whoami|uname|cat|ls|wget|curl|nc|ncat|netcat|bash|sh|zsh|python[23]?|perl|php|ruby|ping|nslookup|dig|sleep|echo|chmod|rm|mkfifo|powershell|cmd|certutil|busybox|base64|telnet|tftp|ifconfig)(?(1)(?:\s*$|\s*[|;&<>\x60)]|\s+[-/$.~\d'"]|\s+https?:|\s+[\w-]+\.[\w.-]*[a-z]{2,})|(?:\s*[|<>\x60]|\s+-{1,2}[a-z]|\s+[/$~'"]|\s+https?:|\s+[\w-]+\.[\w.-]*[a-z]{2,})).*]],
+		[[(?s).*(?:([;|\n\x60]|&&|\$\()|&)\s*(?:(?:/usr)?(?:/local)?/s?bin/)?(?:id|whoami|uname|cat|ls|wget|curl|nc|ncat|netcat|bash|sh|zsh|python[23]?|perl|php|ruby|ping|nslookup|dig|sleep|echo|chmod|rm|mkfifo|powershell|cmd|certutil|busybox|base64|telnet|tftp|ifconfig)(?(1)(?:\s*$|\s*[|;&<>\x60)]|\s+[-/$.~\d'"]|\s+https?:|\s+[\w-]+\.[\w.-]*[a-z]{2,}|\s+[\w.-]+/[\w./-]*\.[a-z]{2,})|(?:\s*[|<>\x60]|\s+-{1,2}[a-z]|\s+[/$~'"]|\s+https?:|\s+[\w-]+\.[\w.-]*[a-z]{2,}|\s+[\w.-]+/[\w./-]*\.[a-z]{2,})).*]],
 	},
 	-- Command injection, strings that only an attack sends: a shell path, a /dev/tcp reverse shell, $IFS as a space, Shellshock, or a Windows shell with its switches.
 	{
@@ -303,9 +306,11 @@ localized_global.WAF_query_string_Request_table = {
 	-- SSRF, a URL to a loopback, private, link-local, or cloud metadata address, also as hex, decimal, octal, an IPv6 literal, or behind user@, or a scheme that only internal services speak.
 	-- Public URLs, such as https://doi.org/... in a redirect parameter, pass.
 	-- A trailing dot, a 1 to 3 part IPv4 form such as 127.1 or 0x7f.1, and the bare address 0 reach the same host, while DNS names that resolve to private addresses stay out of reach.
+	-- libcurl and inet_aton also read each part after the first as hex or octal, as in 127.0x0.1 or 169.0376.169.254, and the last @ ends the user part, as in http://a@b@127.0.0.1/.
+	-- Java opens file:/path with one slash, so file: needs only one.
 	{
 		"(?s).*",
-		[[(?s).*(?:(?:gopher|dict|file|ldaps?|tftp|netdoc)://|jar:(?:https?|file|ftp)://|://(?>[^/@?#\s]*@)?(?:\[[0-9a-f:.%]+\]|(?:localhost\.?|127(?:\.\d+){1,3}\.?|0\.0\.0\.0\.?|0x[0-9a-f]+(?:\.[0-9a-f]+)*\.?|\d{8,10}\.?|0\d*(?:\.\d+){0,3}\.?|10(?:\.\d+){1,3}\.?|192\.168(?:\.\d+){1,2}\.?|172\.(?:1[6-9]|2\d|3[01])(?:\.\d+){1,2}\.?|169\.254(?:\.\d+){1,2}\.?|metadata\.google\.internal\.?|100\.100\.100\.200\.?)(?:[:/?#]|$))).*]],
+		[[(?s).*(?:(?:gopher|dict|ldaps?|tftp|netdoc)://|file:/|jar:(?:https?|file|ftp):/|://(?>[^/?#\s]*@)?(?:\[[0-9a-f:.%]+\]|(?:localhost\.?|127(?:\.(?:0x[0-9a-f]+|\d+)){1,3}\.?|0\.0\.0\.0\.?|0x[0-9a-f]+(?:\.(?:0x)?[0-9a-f]+)*\.?|\d{8,10}\.?|0\d*(?:\.(?:0x[0-9a-f]+|\d+)){0,3}\.?|10(?:\.(?:0x[0-9a-f]+|\d+)){1,3}\.?|192\.(?:168|0xa8|0250)(?:\.(?:0x[0-9a-f]+|\d+)){1,2}\.?|172\.(?:1[6-9]|2\d|3[01]|0x1[0-9a-f]|0[23][0-7])(?:\.(?:0x[0-9a-f]+|\d+)){1,2}\.?|169\.(?:254|0xfe|0376)(?:\.(?:0x[0-9a-f]+|\d+)){1,2}\.?|metadata\.google\.internal\.?|100\.100\.100\.200\.?)(?:[:/?#]|$))).*]],
 	},
 	-- Java deserialization, a serialized object as base64 (rO0AB), hex (aced0005), or raw bytes, or a JSON gadget type.
 	-- The object must start the value or follow a non-base64 character, so an arbitrary token, such as an OAI resumptionToken, cannot match by chance.
@@ -318,6 +323,12 @@ localized_global.WAF_query_string_Request_table = {
 	{
 		"(?s).*",
 		[[(?s).*(?:(?<![a-z0-9_])[oc]:\+?\d{1,6}:"[^"]{1,200}":\d{1,6}:\{|phar://).*]],
+	},
+	-- PHP code tags, an XML DOCTYPE or ENTITY declaration (XXE), and a Spring expression type reference such as ${T(java.lang.Runtime)}.
+	-- <?xml passes, and "java.lang.Runtime" alone stays a valid repository search.
+	{
+		"(?s).*",
+		[[(?s).*(?:<\?(?:php|=)|<!(?:doctype|entity)\s|[$#]\{\s*t\s*\().*]],
 	},
 	-- ASP code injection, JSP and ERB template tags included: a <% tag, or the objects and calls that classic ASP webshells use.
 	{
@@ -354,10 +365,15 @@ localized_global.WAF_Header_Request_table = {
 		"^.*$",
 		[[(?:^|[^A-Za-z0-9+/])(?:rO0AB|aced0005|ACED0005)]],
 	},
-	-- PHP object injection through cookies, which PHP decodes before an app unserializes them; raw or percent-encoded.
+	-- PHP object injection through cookies, which PHP decodes before an app unserializes them, or a phar:// stream; raw or percent-encoded, %2B for the + included.
 	{
 		"^cookie$",
-		[[(?i)(?<![a-z0-9_])[oc](?::|%3a)\+?\d{1,6}(?::|%3a)(?:"|%22).{1,200}?(?:"|%22)(?::|%3a)\d{1,6}(?::|%3a)(?:\{|%7b)]],
+		[[(?i)(?<![a-z0-9_])[oc](?::|%3a)(?:\+|%2b)?\d{1,6}(?::|%3a)(?:"|%22).{1,200}?(?:"|%22)(?::|%3a)\d{1,6}(?::|%3a)(?:\{|%7b)|phar(?::|%3a)(?:/|%2f){2}]],
+	},
+	-- PHP code tags, which a log viewer that includes the log file would run, and a Spring expression type reference, in any header.
+	{
+		"^.*$",
+		[[(?i)<\?(?:php|=)|[$#]\{\s*t\s*\(]],
 	},
 	-- Shellshock (CVE-2014-6271): a function definition in any header, which a CGI script would hand to bash.
 	{

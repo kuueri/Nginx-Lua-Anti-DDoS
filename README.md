@@ -147,17 +147,18 @@ To turn off the WAF for one `location`, add `access_by_lua_block { return }` to 
 `config/waf-local-overrides.lua` contains the rules. A request that matches a rule gets `403`.
 The rules check the request path, each decoded query value, and some header values:
 
-| Attack                                              | Checked in                                                         |
-| --------------------------------------------------- | ------------------------------------------------------------------ |
-| SQL injection                                       | Query values, `Cookie`, `Referer`, `User-Agent`, `X-Forwarded-For` |
-| XSS                                                 | Query values, `Cookie`, `Referer`, `User-Agent`                    |
-| Command injection                                   | Query values, and Shellshock in all headers                        |
-| File inclusion and path traversal                   | Path, query values                                                 |
-| SSRF                                                | Query values                                                       |
-| Java code injection (Log4Shell) and deserialization | Query values, all headers                                          |
-| PHP code injection and object injection             | Query values, and object injection in `Cookie`                     |
-| ASP, JSP, and ERB code injection                    | Query values                                                       |
-| Sensitive files and admin paths                     | Path                                                               |
+| Attack                                                    | Checked in                                                          |
+| --------------------------------------------------------- | ------------------------------------------------------------------- |
+| SQL injection                                             | Query values, `Cookie`, `Referer`, `User-Agent`, `X-Forwarded-For`  |
+| XSS                                                       | Query values, `Cookie`, `Referer`, `User-Agent`                     |
+| Command injection                                         | Query values, and Shellshock in all headers                         |
+| File inclusion and path traversal                         | Path, query values                                                  |
+| SSRF                                                      | Query values                                                        |
+| Java code injection (Log4Shell, SpEL) and deserialization | Query values, all headers                                           |
+| PHP code injection and object injection                   | Query values, PHP tags in all headers, object injection in `Cookie` |
+| XML external entities (XXE)                               | Query values                                                        |
+| ASP, JSP, and ERB code injection                          | Query values                                                        |
+| Sensitive files and admin paths                           | Path                                                                |
 
 The path rules check the path twice: as the client sent it, and after nginx decodes `%XX` and resolves `..`.
 So `/xmlrpc%2ephp` gets `403` like `/xmlrpc.php`, because nginx and Tomcat decode the path before they pick a file.
