@@ -218,9 +218,10 @@ check(cleared, "X-Forwarded-For must be cleared when realip replaced the address
 _, cleared = request("203.0.113.21")
 check(not cleared, "X-Forwarded-For must stay when realip did not replace the address")
 
--- Crawlers, AI agents, and Turnitin are never banned, even when a request carries a payload, e.g. a link planted with SQLi; the 403 itself stays.
--- A generic HTTP client with payloads is still banned.
+-- Crawlers, AI agents, and Turnitin are not banned for a few payload hits, e.g. links planted with SQLi; the 403 itself stays.
+-- 50 payload hits within 10 minutes ban them, because anyone can send a crawler User-Agent; a generic HTTP client is banned at 5.
 now = now + 3600
+local crawler_n = 0
 for _, crawler in ipairs({
 	"Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)",
 	"Mozilla/5.0 (compatible; bingbot/2.0; +http://www.bing.com/bingbot.htm)",
@@ -232,11 +233,28 @@ for _, crawler in ipairs({
 	"facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)",
 	"Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; Claude-User/1.0; +claude-user@anthropic.com)",
 }) do
+	crawler_n = crawler_n + 1
+	local addr = "203.0.113." .. (80 + crawler_n)
 	for _ = 1, 10 do
-		request("203.0.113.40", { ua = crawler, status = 403 })
+		request(addr, { ua = crawler, status = 403 })
 	end
-	check(request("203.0.113.40", { ua = crawler }) ~= 403, "crawler was banned for payload hits: " .. crawler)
+	check(request(addr, { ua = crawler }) ~= 403, "crawler was banned for 10 payload hits: " .. crawler)
 end
+local patient = "203.0.113.70"
+local patient_ua = "Mozilla/5.0 (compatible; PlagyBot/1.0)"
+for _ = 1, 49 do
+	request(patient, { ua = patient_ua, status = 403 })
+end
+check(request(patient, { ua = patient_ua }) == 200, "49 crawler payload hits must not ban")
+request(patient, { ua = patient_ua, status = 403 })
+check(request(patient, { ua = patient_ua }) == 403, "50 crawler payload hits within 10 minutes must ban")
+local spread = "203.0.113.71"
+for _ = 1, 49 do
+	request(spread, { ua = patient_ua, status = 403 })
+end
+now = now + 601
+request(spread, { ua = patient_ua, status = 403 })
+check(request(spread, { ua = patient_ua }) == 200, "crawler payload hits spread over more than 10 minutes must not ban")
 for _, client in ipairs({ "curl/8.5.0", "python-requests/2.32.3" }) do
 	local addr = client:sub(1, 4) == "curl" and "203.0.113.41" or "203.0.113.42"
 	for _ = 1, 5 do
