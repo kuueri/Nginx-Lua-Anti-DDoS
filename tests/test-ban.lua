@@ -291,6 +291,15 @@ end
 check(request("203.0.113.32", { ua = browser }) == 200, "429 from the AI limit must not count toward a ban")
 now = now + 61
 check(request("203.0.113.31", { ua = chatgpt }) == 200, "the AI limit must reset after a minute")
+now = now + 61
+for i = 1, 10 do
+	request("203.0.113.34", { ua = chatgpt })
+	check(
+		request("203.0.113.34", { ua = chatgpt, internal = true }) == 200,
+		"the internal redirect of ChatGPT-User request " .. i .. " must not use the budget"
+	)
+end
+check(request("203.0.113.34", { ua = chatgpt }) == 429, "the 11th external ChatGPT-User request must get 429")
 check(
 	request("203.0.113.33", { ua = "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)" }) == 200,
 	"Googlebot is no AI agent"

@@ -217,13 +217,13 @@ if ngx.get_phase() == "rewrite" then
 			return ngx.exit(ngx.HTTP_FORBIDDEN)
 		end
 	end
+	if ngx.req.is_internal() then
+		return
+	end
 	local agent = find(AI_AGENTS)
 	if agent and (strikes:incr("ai:" .. agent, 1, 0, AI_WINDOW) or 0) > AI_LIMIT then
 		ngx.header["Retry-After"] = AI_WINDOW
 		return ngx.exit(ngx.HTTP_TOO_MANY_REQUESTS)
-	end
-	if ngx.req.is_internal() then
-		return
 	end
 	local names = {}
 	for name in pairs(args) do
