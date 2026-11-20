@@ -175,26 +175,27 @@ localized_global.WAF_URI_Request_table = {
 -- (?s) lets "." cross a decoded %0A, which would otherwise stop the match and let the payload through.
 -- Upstream also turns each space in a pattern into [ +%20]*, so patterns use \s instead.
 -- Upstream uses an argument name only to pick rules, so waf-ban.lua also matches each name against these rules and answers a hit with 403; ?x'+union+select+1-- has no value at all.
+-- Upstream matches names against ^(?i)<name>$ without the s flag, so a catch-all name is (?s).*, or a decoded %0A in a name such as q[a%0Ab] would skip every rule for that value.
 -- The SQLi rules cover MySQL (SLiMS, WordPress) and PostgreSQL or Oracle (DSpace); POST and JSON bodies stay unchecked, see the POST table.
 localized_global.WAF_query_string_Request_table = {
 	-- SQLi, UNION-based. "select" must be a whole word, so catalogue searches such as "trade union selection" pass.
 	-- (?>...) locks the first "union" to keep the match linear, because a match that hits the PCRE limit returns an error and upstream lets the request through.
 	{
-		"^.*$",
+		"(?s).*",
 		[[(?s)(?>.*?(?<![a-z_])union(?![a-z0-9_])).*(?<![a-z_])select(?![a-z0-9_]).*]],
 	},
 	-- SQLi, boolean tautology such as ' or '1'='1 or 1 and 1=1.
 	-- The operator must be followed by a quote or digit, so titles such as "Teachers' and students' perceptions" pass.
 	-- An inline comment counts as a space, as in ')/**/AND/**/('a'='a, which sqlmap sent to DSpace on 2026-11-18; (?:\s|/\*[^*]*+\*/)*+ stays possessive to keep the scan linear.
 	{
-		"^.*$",
+		"(?s).*",
 		[[(?s)(?>.*?['"\d)](?:\s|/\*[^*]*+\*/)*+(?:or|and|xor|\|\||&&)(?:\s|/\*[^*]*+\*/)*+\(?(?:\s|/\*[^*]*+\*/)*+['"\d]).*[=<>].*]],
 	},
 	-- SQLi, a whole value that is a numeric tautology without a comparison, such as 1 or 1, 1 or true, or 1 || 1, optionally ending in a comment.
 	-- Both sides must hold the same number, so a search such as "1 or 2" passes.
 	-- \1 refers to group 1, because upstream's ^(?i)...$ wrapping adds no group, and an inline comment counts as a space, as in 1/**/or/**/1.
 	{
-		"^.*$",
+		"(?s).*",
 		[[(?s)\s*-?(\d+)(?:\s|/\*[^*]*+\*/)*+(?:(?:or|xor|and)(?:\s|/\*[^*]*+\*/)*+(?:-?\1|true|false)|(?:\|\||&&)(?:\s|/\*[^*]*+\*/)*+-?\d+)\s*(?:(?:--|#|/\*).*)?]],
 	},
 	-- SQLi, time-based and error-based functions, matched only with their opening parenthesis so "sleep quality" passes.
@@ -202,75 +203,76 @@ localized_global.WAF_query_string_Request_table = {
 	-- ascii( and ord( stay out, because titles such as "ASCII (...)" would match; the substr or mid call inside such a probe already matches.
 	-- MySQL reads an inline comment as a space, as in SLEEP/**/(5), so the tautology rule's possessive comment token may sit before the parenthesis.
 	{
-		"^.*$",
+		"(?s).*",
 		[[(?s).*(?<![a-z_])(?:(?:sleep|pg_sleep|benchmark|extractvalue|updatexml|load_file|group_concat|concat|concat_ws|name_const|unhex|ifnull|make_set)(?:\s|/\*[^*]*+\*/)*+\(|char(?:\s|/\*[^*]*+\*/)*+\(\s*\d|(?:substr(?:ing)?|mid)(?:\s|/\*[^*]*+\*/)*+\([^()]*,\s*\d+\s*,\s*\d+\s*\)).*]],
 	},
 	-- SQLi, a quote closed by a comment or terminator, such as admin'-- or admin'#.
 	{
-		"^.*$",
+		"(?s).*",
 		[[(?s).*['"]\s*(?:--(?:\s|$)|#|/\*|;).*]],
 	},
 	-- SQLi, column counting with ORDER BY n closed by a comment or terminator, such as subject' ORDER BY 1-- -, which sqlmap sent to DSpace on 2026-11-18.
 	-- The comment must follow, so a search such as "Law and order by 1998 standards" passes.
 	{
-		"^.*$",
+		"(?s).*",
 		[[(?s).*(?<![a-z_])order(?:\s|/\*[^*]*+\*/)++by(?:\s|/\*[^*]*+\*/)++\d+(?:\s*,\s*\d+)*+(?:\s|/\*[^*]*+\*/)*+(?:--|#|/\*|;).*]],
 	},
 	-- SQLi, subquery.
 	-- An inline comment counts as a space, and MySQL runs the body of a versioned comment, so (/*!50000SELECT*/1) and (/*!50000 SELECT*/1) open a subquery too.
 	{
-		"^.*$",
+		"(?s).*",
 		[[(?s).*\((?:(?:\s|/\*[^*]*+\*/)*+select|\s*+/\*!\d*+\s*+select)(?![a-z0-9_]).*]],
 	},
 	-- SQLi, schema probing and file access.
 	-- An inline comment counts as a space, as in INTO/**/OUTFILE or USER/**/().
 	{
-		"^.*$",
+		"(?s).*",
 		[[(?s).*(?:information_schema|mysql\.user|pg_catalog|pg_shadow|sqlite_master|@@(?:version|datadir|hostname|basedir)|into(?:\s|/\*[^*]*+\*/)+(?:out|dump)file|(?<![a-z_])(?:version|database|user|current_user|schema)(?:\s|/\*[^*]*+\*/)*+\(\s*\)|dbms_pipe|utl_http|utl_inaddr).*]],
 	},
 	-- SQLi through sort parameters, a common WordPress plugin hole: only word characters, spaces, comma, dot, and dash pass.
 	-- The name is grouped because upstream wraps it as ^(?i)<name>$.
+	-- PHP drops leading spaces from a name and turns "." and " " into "_", so " orderby", "order.by", and "order by" reach PHP as orderby and order_by.
 	{
-		[[(?:order|orderby|order_by|sort|sort_by)]],
+		[[\s*(?:order|sort)(?:[\s._]?by)?]],
 		[[(?s).*[^\w\s,.-].*]],
 	},
 	{
-		"^.*$",
+		"(?s).*",
 		[[(?s).*base64_(?:en|de)code.*]],
 	},
 	{
-		"^.*$",
+		"(?s).*",
 		[[(?s).*(?:php|data)://.*]],
 	},
 	-- Also covers the documented CVE-2025-55752 request shape, ?param=../WEB-INF/web.xml.
 	{
-		"^.*$",
+		"(?s).*",
 		[[(?s).*\.\./.*]],
 	},
 	-- Local file inclusion by absolute path, because include() and file_get_contents() open /etc/passwd without any ../.
 	-- The list holds the OS files that CRS rule 930120 (lfi-os-files.data) sees probed most.
 	-- (?![a-z]) lets "etc/passwords" pass, and (?:\.?/)*+ catches /etc/./passwd and /etc//passwd, which PHP opens too.
 	{
-		"^.*$",
+		"(?s).*",
 		[[(?s)(?:(?:.*/)?etc/(?:\.?/)*+(?:passwd|shadow|group|hosts)(?![a-z])|.*(?:/proc/self/|win\.ini|boot\.ini)).*]],
 	},
 	-- Log4Shell (CVE-2021-44228, Log4j 2.x): ${jndi:...} and obfuscated ${...:...} lookups
 	-- A ${...} without ":" before its "}" is skipped whole and possessively, which suffices because a ${ nested inside it has no ":" before that "}" either.
 	-- So the scan stays linear without a length cap that a long key, as in ${${aaa...:-j}ndi:...}, could outrun; the earlier .*\$\{[^}]*: form spent 10 s of PCRE JIT time on 8 KB of "${:".
 	{
-		"^.*$",
+		"(?s).*",
 		[[(?s)(?:.*\$\{jndi|(?:(?:[^$]++|\$(?!\{))*+\$\{[^}:]*+\})*+(?:[^$]++|\$(?!\{))*+\$\{[^}:]*+:[^}]*+\}).*]],
 	},
 	-- The rules below, through ASP, must stay linear too: an unbounded scan nested inside another lets a long value hit the PCRE limit and pass.
 	-- XSS, a tag that runs script or loads content. Browsers need the name right after "<", so "p<0.05" and "x < y" pass.
 	{
-		"^.*$",
+		"(?s).*",
 		[[(?s).*</?(?:script|iframe|frame|frameset|object|embed|applet|svg|math|img|image|video|audio|source|body|style|link|meta|base|form|input|button|textarea|select|details|marquee|isindex|template)(?![a-z0-9_-]).*]],
 	},
 	-- XSS, an event handler after any tag, such as <x onclick=...>; (?>...) locks the first tag.
 	-- A quote also opens it, because a quote can close the attribute an app echoes the value into, so a handler can follow without any tag.
 	{
-		"^.*$",
+		"(?s).*",
 		[[(?s)(?>.*?(?:<[a-z]|["'\x60])).*?[\s/"'\x60]on[a-z]{3,}\s*=.*]],
 	},
 	-- XSS, a script URL at the start of a value that a page may put into href or src.
@@ -279,7 +281,7 @@ localized_global.WAF_query_string_Request_table = {
 	-- A space is no such delimiter, so a search such as Crockford JavaScript: "the good parts" passes.
 	-- The two-way alternation keeps the scan linear; the optional form (?:.*[...])?[\x00-\x20]* cost 35 ms on 8 KB of spaces.
 	{
-		"^.*$",
+		"(?s).*",
 		[[(?s)(?:[\x00-\x20]*|.*["'\x60=(<>])(?:(?:javascript|vbscript|livescript)\s*:\s*(?:[^\s\w]|[\w$.]+\s*[(\x60=])|data\s*:\s*(?:text/html|image/svg[+\s]xml|application/(?:x-)?javascript)).*]],
 	},
 	-- Command injection, a shell separator or substitution, a common command, and then what only a shell line has next: its end, an operator, an option, a path, a digit, a quote, a URL, or a host.
@@ -288,36 +290,36 @@ localized_global.WAF_query_string_Request_table = {
 	-- So after a single &, which leaves group 1 unset, the conditional (?(1)...|...) asks for a stronger tail: a pipe or redirect, an option, a path, a quote, a URL, or a host.
 	-- That lets "x&id" through, while "x&id|..." or "x&cat /etc/passwd" still match.
 	{
-		"^.*$",
+		"(?s).*",
 		[[(?s).*(?:([;|\n\x60]|&&|\$\()|&)\s*(?:(?:/usr)?(?:/local)?/s?bin/)?(?:id|whoami|uname|cat|ls|wget|curl|nc|ncat|netcat|bash|sh|zsh|python[23]?|perl|php|ruby|ping|nslookup|dig|sleep|echo|chmod|rm|mkfifo|powershell|cmd|certutil|busybox|base64|telnet|tftp|ifconfig)(?(1)(?:\s*$|\s*[|;&<>\x60)]|\s+[-/$.~\d'"]|\s+https?:|\s+[\w-]+\.[\w.-]*[a-z]{2,})|(?:\s*[|<>\x60]|\s+-{1,2}[a-z]|\s+[/$~'"]|\s+https?:|\s+[\w-]+\.[\w.-]*[a-z]{2,})).*]],
 	},
 	-- Command injection, strings that only an attack sends: a shell path, a /dev/tcp reverse shell, $IFS as a space, Shellshock, or a Windows shell with its switches.
 	{
-		"^.*$",
+		"(?s).*",
 		[[(?s).*(?:/bin/(?:ba|da|z|k)?sh(?![a-z])|/dev/(?:tcp|udp)/|\$\{?ifs\}?|\(\)\s*\{\s*[:\w]+;|cmd(?:\.exe)?\s*/[ck]\s|powershell(?:\.exe)?\s+-(?:e|enc|c|nop|w)\b).*]],
 	},
 	-- SSRF, a URL to a loopback, private, link-local, or cloud metadata address, also as hex, decimal, octal, an IPv6 literal, or behind user@, or a scheme that only internal services speak.
 	-- Public URLs, such as https://doi.org/... in a redirect parameter, pass.
 	-- A trailing dot, a 1 to 3 part IPv4 form such as 127.1 or 0x7f.1, and the bare address 0 reach the same host, while DNS names that resolve to private addresses stay out of reach.
 	{
-		"^.*$",
+		"(?s).*",
 		[[(?s).*(?:(?:gopher|dict|file|ldaps?|tftp|netdoc)://|jar:(?:https?|file|ftp)://|://(?>[^/@?#\s]*@)?(?:\[[0-9a-f:.%]+\]|(?:localhost\.?|127(?:\.\d+){1,3}\.?|0\.0\.0\.0\.?|0x[0-9a-f]+(?:\.[0-9a-f]+)*\.?|\d{8,10}\.?|0\d*(?:\.\d+){0,3}\.?|10(?:\.\d+){1,3}\.?|192\.168(?:\.\d+){1,2}\.?|172\.(?:1[6-9]|2\d|3[01])(?:\.\d+){1,2}\.?|169\.254(?:\.\d+){1,2}\.?|metadata\.google\.internal\.?|100\.100\.100\.200\.?)(?:[:/?#]|$))).*]],
 	},
 	-- Java deserialization, a serialized object as base64 (rO0AB), hex (aced0005), or raw bytes, or a JSON gadget type.
 	-- The object must start the value or follow a non-base64 character, so an arbitrary token, such as an OAI resumptionToken, cannot match by chance.
 	{
-		"^.*$",
+		"(?s).*",
 		[[(?s)(?:(?:.*[^a-z0-9+/])?(?:ro0ab|aced0005|\xac\xed\x00\x05)|.*(?:"@type"\s*:\s*"|jdbcrowsetimpl|templatesimpl|commons\.collections\.functors|ysoserial)).*]],
 	},
 	-- PHP object injection, a serialized object such as O:8:"stdClass":0:{} or O:+8:..., or a phar:// stream, whose metadata PHP unserializes.
 	-- Serialized arrays and strings without an object pass.
 	{
-		"^.*$",
+		"(?s).*",
 		[[(?s).*(?:(?<![a-z0-9_])[oc]:\+?\d{1,6}:"[^"]{1,200}":\d{1,6}:\{|phar://).*]],
 	},
 	-- ASP code injection, JSP and ERB template tags included: a <% tag, or the objects and calls that classic ASP webshells use.
 	{
-		"^.*$",
+		"(?s).*",
 		[[(?s).*(?:<%|(?<![a-z0-9_])(?:response\.(?:write|binarywrite)|server\.(?:createobject|execute|transfer|mappath)|createobject\s*\(|wscript\.shell|scripting\.filesystemobject|adodb\.stream|executeglobal|(?:eval|execute)\s*\(?\s*request)).*]],
 	},
 }
