@@ -273,8 +273,9 @@ The JavaScript challenge is automatic. Upstream turns on the challenge for all p
 When upstream bans fewer than 100 addresses, no request gets the challenge.
 
 API clients and OAI-PMH harvesters are not browsers. They cannot solve the JavaScript challenge.
-During an attack, they get the challenge too, because no path skips it.
-Only the User-Agent whitelist skips the challenge, for Googlebot, Bingbot, and Turnitin.
+`/oai/` paths skip the automatic JavaScript challenge in `config/waf-local-overrides.lua` while keeping all WAF rules and flood protection active.
+Other API paths still get the challenge during an attack.
+Only the User-Agent whitelist skips the challenge on other paths, for Googlebot, Bingbot, and Turnitin.
 
 ### User-Agent lists
 
