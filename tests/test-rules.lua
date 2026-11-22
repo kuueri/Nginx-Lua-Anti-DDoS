@@ -169,6 +169,7 @@ local cases = {
 	{ false, "uri", "/environmental-science/" },
 	{ false, "uri", "/xmlui/handle/123456789/1;jsessionid=0A1B2C" },
 	{ false, "uri", "/bitstream/handle/123456789/1/report.pdf" },
+	{ false, "uri", "/oai/request" },
 	{ false, "uri", "/installing-slims-on-ubuntu/" },
 	{ false, "uri", "/wp-content/themes/twentytwentyfive/style.css" },
 	{ false, "uri", "/wp-content/uploads/2025/01/photo.jpg" },
@@ -184,6 +185,7 @@ local cases = {
 	{ true, "query", "1\nunion\nselect 1" },
 	{ true, "query", "1union select 1" },
 	{ true, "query", "' or '1'='1" },
+	{ true, "query", "'or'1'='1" },
 	{ true, "query", "admin' or 1=1-- -" },
 	{ true, "query", "1\nAND\n1=2" },
 	{ true, "query", "admin'-- " },
@@ -409,6 +411,11 @@ local cases = {
 	{ false, "query", "https://doi.org/10.1016/j.lisr.2020.101" },
 	{ false, "query", "The bell jar: a novel" },
 	{ false, "query", "MToxMDB8Mjp8Mzp8NDp8NTpvYWlfZGM=", "resumptionToken" },
+	{ false, "query", "MToxMDB8Mjp8Mzp8NDpjb19oR2F8NTpvYWlfZGM=", "resumptionToken" },
+	{ false, "query", "abc5Or3xyz==", "resumptionToken" },
+	{ false, "query", "ListRecords", "verb" },
+	{ false, "query", "oai_dc", "metadataPrefix" },
+	{ false, "query", "oai:repository.unisma.ac.id:123456789/1234", "identifier" },
 	{ false, "query", "abcrO0ABxyz" },
 	{ false, "query", "a:2:{i:0;i:7;i:1;i:9;}" },
 	{ false, "query", "Bab 2: Pendahuluan" },
@@ -705,13 +712,37 @@ assert(
 	before.OPTIONS and before.PUT,
 	"upstream no longer bans OPTIONS and PUT in field 26; revisit the anti_ddos_table override"
 )
-for _, site in ipairs(g.anti_ddos_table()) do
+local table_after = g.anti_ddos_table()
+for _, site in ipairs(table_after) do
 	local after = banned_methods(site)
 	assert(after.OPTIONS == nil, "anti_ddos_table override left OPTIONS in the prohibited methods")
 	assert(
 		after.PUT and after.PATCH and after.DELETE,
 		"anti_ddos_table override must keep the PUT, PATCH, and DELETE bans"
 	)
+end
+local oai, default = table_after[1], table_after[#table_after]
+assert(
+	oai[23] == 1 and oai[24] == math.huge,
+	"OAI entry must disable the automatic JS challenge without enabling master_switch"
+)
+assert(oai[40] == store.anti_ddos_table[1][40], "OAI entry must copy fields past the nil hole at field 32")
+assert(
+	default[1] == ".*" and default[23] == 1 and default[24] == 100,
+	"catch-all entry must keep the default automatic JS challenge"
+)
+for _, url in ipairs({
+	"https://repository.unisma.ac.id/oai/request?metadataPrefix=oai_dc&verb=ListRecords",
+	"https://repository.unisma.ac.id/oai?verb=Identify",
+}) do
+	assert(url:find(oai[1]), "OAI entry must match " .. url)
+end
+for _, url in ipairs({
+	"https://repository.unisma.ac.id/?x=/oai/",
+	"https://repository.unisma.ac.id/oai-guide/",
+	"https://repository.unisma.ac.id/handle/123456789/1",
+}) do
+	assert(not url:find(oai[1]), "OAI entry must not match " .. url)
 end
 
 assert(
