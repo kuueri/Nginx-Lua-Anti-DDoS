@@ -189,9 +189,10 @@ localized_global.WAF_query_string_Request_table = {
 	-- SQLi, boolean tautology such as ' or '1'='1 or 1 and 1=1.
 	-- The operator must be followed by a quote or digit, so titles such as "Teachers' and students' perceptions" pass.
 	-- An inline comment counts as a space, as in ')/**/AND/**/('a'='a, which sqlmap sent to DSpace on 2026-11-18; (?:\s|/\*[^*]*+\*/)*+ stays possessive to keep the scan linear.
+	-- Word operators need (?![a-z0-9_]) after them, because SQL lexes "or2" as an identifier, not "or 2", and otherwise base64 tokens such as an OAI resumptionToken holding 9oR2 before "=" match.
 	{
 		"(?s).*",
-		[[(?s)(?>.*?['"\d)](?:\s|/\*[^*]*+\*/)*+(?:or|and|xor|\|\||&&)(?:\s|/\*[^*]*+\*/)*+\(?(?:\s|/\*[^*]*+\*/)*+['"\d]).*[=<>].*]],
+		[[(?s)(?>.*?['"\d)](?:\s|/\*[^*]*+\*/)*+(?:(?:or|and|xor)(?![a-z0-9_])|\|\||&&)(?:\s|/\*[^*]*+\*/)*+\(?(?:\s|/\*[^*]*+\*/)*+['"\d]).*[=<>].*]],
 	},
 	-- SQLi, a whole value that is a numeric tautology without a comparison, such as 1 or 1, 1 or true, or 1 || 1, optionally ending in a comment.
 	-- Both sides must hold the same number, so a search such as "1 or 2" passes.
@@ -405,13 +406,15 @@ localized_global.WAF_body_skip = {
 -- true answers a hit with 403, which counts toward a ban.
 localized_global.WAF_cookie_block = false
 -- Lua patterns for cookie names whose values waf-ban.lua does not check, because they carry opaque tokens; upstream never reads this setting.
--- sl-session is the base64 session token of a SafeLine front proxy, and about 1 in 2,000 values, such as one holding 5Or3 before its == padding, matches the tautology rule.
+-- sl-session is the base64 session token of a SafeLine front proxy.
 localized_global.WAF_cookie_skip = { "^sl%-session$" }
 
 -- Upstream's default anti_ddos_table closes the connection and bans the address for 24 hours on PATCH, PUT, DELETE, CONNECT, OPTIONS, or TRACE.
 -- Readers send OPTIONS too: Microsoft Office and some browsers ask with OPTIONS before they open a bitstream link, so OPTIONS leaves that list and reaches the application again.
 -- PUT, PATCH, and DELETE stay banned, because only vulnerability scanners sent them in the DSpace access logs.
--- Upstream calls this function once per worker, after it builds its default table, so every other default stays as upstream ships it; field 26 of each entry is the method list.
+-- Upstream also turns on the JavaScript challenge for all paths once 100 addresses are banned (field 24), which breaks non-browser OAI-PMH harvesters with a 200 HTML page.
+-- Prepending a copy of the default entry for /oai/ with field 24 set to math.huge keeps the challenge off there (field 23 must stay 1, or upstream's default master_switch = 1 leaves the challenge always on) while keeping all WAF rules and flood checks active.
+-- pairs() copies every field across the nil hole at field 32; upstream calls this function once per worker after it builds its default table.
 localized_global.anti_ddos_table = function()
 	local t = package.loaded["anti_ddos_config_store"].anti_ddos_table
 	for _, site in ipairs(t) do
@@ -421,5 +424,15 @@ localized_global.anti_ddos_table = function()
 			end
 		end
 	end
-	return t
+	local oai = {}
+	for k, v in pairs(t[1]) do
+		oai[k] = v
+	end
+	oai[1] = "://[^/]+/oai[/?]"
+	oai[24] = math.huge
+	local out = { oai }
+	for i = 1, #t do
+		out[i + 1] = t[i]
+	end
+	return out
 end
