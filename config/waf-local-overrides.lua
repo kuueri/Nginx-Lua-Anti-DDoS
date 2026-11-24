@@ -273,14 +273,16 @@ localized_global.WAF_query_string_Request_table = {
 		"(?s).*",
 		[[(?s).*base64_(?:en|de)code.*]],
 	},
+	-- PHP stream wrappers that include(), file_get_contents(), or fopen() open: code, archives, commands, and compressed files.
 	{
 		"(?s).*",
-		[[(?s).*(?:php|data)://.*]],
+		[[(?s).*(?:php|data|zip|expect|glob|compress\.(?:zlib|bzip2))://.*]],
 	},
 	-- Also covers the documented CVE-2025-55752 request shape, ?param=../WEB-INF/web.xml.
+	-- A backslash separates path parts on Windows and in Java's File, and %2e or %2f left in a decoded value means an app decodes it a second time.
 	{
 		"(?s).*",
-		[[(?s).*\.\./.*]],
+		[[(?s).*(?:\.|%2e){2}(?:[/\\]|%2f|%5c).*]],
 	},
 	-- Local file inclusion by absolute path, because include() and file_get_contents() open /etc/passwd without any ../.
 	-- The list holds the OS files that CRS rule 930120 (lfi-os-files.data) sees probed most.
@@ -351,15 +353,17 @@ localized_global.WAF_query_string_Request_table = {
 	},
 	-- PHP object injection, a serialized object such as O:8:"stdClass":0:{} or O:+8:..., or a phar:// stream, whose metadata PHP unserializes.
 	-- Serialized arrays and strings without an object pass.
+	-- The object may also follow a hex HMAC, as in Yii2's signed cookies, which unserialize what follows the 64 hex digits.
 	{
 		"(?s).*",
-		[[(?s).*(?:(?<![a-z0-9_])[oc]:\+?\d{1,6}:"[^"]{1,200}":\d{1,6}:\{|phar://).*]],
+		[[(?s).*(?:(?:^|[^a-z0-9_]|[0-9a-f]{32})[oc]:\+?\d{1,6}:"[^"]{1,200}":\d{1,6}:\{|phar://).*]],
 	},
-	-- PHP code tags, an XML DOCTYPE or ENTITY declaration (XXE), and a Spring expression type reference such as ${T(java.lang.Runtime)}.
+	-- PHP code tags, an XML DOCTYPE or ENTITY declaration (XXE), and Java template injection.
+	-- Java covers a Spring expression type reference such as ${T(java.lang.Runtime)} or ${(T(...)), reflection through getClass().forName(, new java.lang.ProcessBuilder or Runtime, Velocity's $class.inspect(, and FreeMarker's <#assign and Execute utility.
 	-- <?xml passes, and "java.lang.Runtime" alone stays a valid repository search.
 	{
 		"(?s).*",
-		[[(?s).*(?:<\?(?:php|=)|<!(?:doctype|entity)\s|[$#]\{\s*t\s*\().*]],
+		[[(?s).*(?:<\?(?:php|=)|<!(?:doctype|entity)\s|[$#]\{\s*\(*\s*t\s*\(|(?:getclass\s*\(\s*\)\s*\.\s*forname|\.class\.forname|\.inspect)\s*\(|new\s+java\.lang\.(?:processbuilder|runtime)|<#assign\b|freemarker\.template\.utility\.).*]],
 	},
 	-- ASP code injection, JSP and ERB template tags included: a <% tag, or the objects and calls that classic ASP webshells use.
 	{
@@ -371,9 +375,15 @@ localized_global.WAF_query_string_Request_table = {
 -- Upstream matches header values raw, unanchored, and case-sensitively, so value patterns start with (?i).
 localized_global.WAF_Header_Request_table = {
 	-- XSS through headers that apps decode, store, or show: a cookie that PHP decodes, or a Referer or User-Agent in an admin log view; raw or percent-encoded.
+	-- A quote also opens an event handler without any tag, because a log view may echo the value into an attribute.
 	{
 		"^(?:cookie|referer|user-agent)$",
-		[[(?i)(?:<|%3c)/?(?:script|iframe|svg|img|body|object|embed|style|link|meta|base|form|input|details|math|video|audio)(?![a-z0-9_-])|^(?>.*?(?:<|%3c)[a-z]).*?(?:[\s/"'\x60+]|%2[0f27])on[a-z]{3,}\s*(?:=|%3d)]],
+		[[(?i)(?:<|%3c)/?(?:script|iframe|svg|img|body|object|embed|style|link|meta|base|form|input|details|math|video|audio)(?![a-z0-9_-])|^(?>.*?(?:<|%3c)[a-z]).*?(?:[\s/"'\x60+]|%2[0f27])on[a-z]{3,}\s*(?:=|%3d)|(?:["'\x60]|%2[27]|%60)(?:\s|\+|%20)*+on[a-z]{3,}\s*(?:=|%3d)]],
+	},
+	-- A script URL as the whole Referer, which an admin log view may turn into a link; browsers drop tabs and line breaks inside the scheme.
+	{
+		"^referer$",
+		[[(?i)^\s*(?:j[\t\n\r ]*a[\t\n\r ]*v[\t\n\r ]*a|v[\t\n\r ]*b|l[\t\n\r ]*i[\t\n\r ]*v[\t\n\r ]*e)[\t\n\r ]*s[\t\n\r ]*c[\t\n\r ]*r[\t\n\r ]*i[\t\n\r ]*p[\t\n\r ]*t\s*:]],
 	},
 	-- SQLi through headers that apps store or log, client address headers included: UNION SELECT, time-based or error-based functions, and a subquery.
 	-- An inline comment may sit before the parenthesis, as in SLEEP/**/(5), as in the query rule.
@@ -397,14 +407,15 @@ localized_global.WAF_Header_Request_table = {
 		[[(?:^|[^A-Za-z0-9+/])(?:rO0AB|aced0005|ACED0005)]],
 	},
 	-- PHP object injection through cookies, which PHP decodes before an app unserializes them, or a phar:// stream; raw or percent-encoded, %2B for the + included.
+	-- The object may also follow a hex HMAC, as in Yii2's signed cookies.
 	{
 		"^cookie$",
-		[[(?i)(?<![a-z0-9_])[oc](?::|%3a)(?:\+|%2b)?\d{1,6}(?::|%3a)(?:"|%22).{1,200}?(?:"|%22)(?::|%3a)\d{1,6}(?::|%3a)(?:\{|%7b)|phar(?::|%3a)(?:/|%2f){2}]],
+		[[(?i)(?:^|[^a-z0-9_]|[0-9a-f]{32})[oc](?::|%3a)(?:\+|%2b)?\d{1,6}(?::|%3a)(?:"|%22).{1,200}?(?:"|%22)(?::|%3a)\d{1,6}(?::|%3a)(?:\{|%7b)|phar(?::|%3a)(?:/|%2f){2}]],
 	},
-	-- PHP code tags, which a log viewer that includes the log file would run, and a Spring expression type reference, in any header.
+	-- PHP code tags, which a log viewer that includes the log file would run, and Java template injection as in the query rule, in any header.
 	{
 		"^.*$",
-		[[(?i)<\?(?:php|=)|[$#]\{\s*t\s*\(]],
+		[[(?i)<\?(?:php|=)|[$#]\{\s*\(*\s*t\s*\(|(?:getclass\s*\(\s*\)\s*\.\s*forname|\.class\.forname|\.inspect)\s*\(|new\s+java\.lang\.(?:processbuilder|runtime)|<#assign\b|freemarker\.template\.utility\.]],
 	},
 	-- Shellshock (CVE-2014-6271): a function definition in any header, which a CGI script would hand to bash.
 	{

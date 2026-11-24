@@ -70,6 +70,8 @@ UNITS = [
     b"1/***/or/***/",
     b";drop ",
     b"/uploaded_files/",
+    b"${(",
+    b"getClass().",
 ]
 ALPHABET = b"a'\"<>=(){}$:;|&/.-_ 01on\n%,"
 CANARY = rb"^(?i)(?s).*\$\{(?:jndi|[^}]*:[^}]*\}).*$"
