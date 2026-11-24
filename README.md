@@ -1,48 +1,49 @@
 # Nginx WAF
 
-This repo is a fork of [Nginx-Lua-Anti-DDoS](https://github.com/C0nw0nk/Nginx-Lua-Anti-DDoS) by Conor McKnight ([C0nw0nk](https://github.com/C0nw0nk)).
-Its scripts install and update the upstream WAF on Ubuntu and RPM-based servers, and add local rules to it.
-For the upstream documentation, read the [upstream README](https://github.com/C0nw0nk/Nginx-Lua-Anti-DDoS#readme).
+This repository is a cybersecurity defense fork of [Nginx-Lua-Anti-DDoS](https://github.com/C0nw0nk/Nginx-Lua-Anti-DDoS) by Conor McKnight ([C0nw0nk](https://github.com/C0nw0nk)).
+It adds deployment scripts for `deb` and `rpm` Linux systems, local WAF rules, and exponential in-memory IP banning.
+For upstream details, read the [upstream README](https://github.com/C0nw0nk/Nginx-Lua-Anti-DDoS#readme).
 
 ## Requirements
 
-- An installed nginx. The scripts do not install nginx.
-- Root access on the server.
+- An installed nginx server. The scripts do not install nginx.
+- Root access on the target server.
 
-The scripts do not need a Lua module in nginx. If nginx has no Lua module, the update script builds one from source.
-Ubuntu 24.04 no longer has the `libnginx-mod-http-lua` package, so this build also applies to Ubuntu.
+The scripts do not require an existing nginx Lua module.
+If nginx lacks a Lua module, the update script builds one from source.
 
 ## Layout
 
 | Path                                       | Purpose                                                                 |
 | ------------------------------------------ | ----------------------------------------------------------------------- |
-| `lua/anti_ddos_challenge.lua`              | Upstream WAF, installed as `/etc/nginx/lua/waf.lua`                     |
-| `config/nginx-waf.conf`                    | `http` block snippet that turns on the WAF for all sites                |
-| `config/waf-local-overrides.lua`           | Local secret and WAF rules                                              |
-| `config/waf-ban.lua`                       | Bans addresses after repeated WAF rule hits                             |
-| `config/waf-stats.lua`                     | WAF stats as JSON on `http://127.0.0.1:9180/ddos_stats`                 |
-| `scripts/deploy.sh`                        | Copies the repo files to a server over ssh, then installs or updates    |
-| `scripts/install-deb.sh`, `install-rpm.sh` | First install: makes the server secret, then runs the update script     |
-| `scripts/update-deb.sh`, `update-rpm.sh`   | Update: builds the Lua module if necessary, then installs the WAF files |
-| `scripts/lib/common.sh`                    | Shared module build, file sync, backup, rollback, and reload            |
-| `tests/`                                   | Tests for the scripts, the local rules, and `waf-ban.lua`               |
-| `debian/`, `rpm/`, `.github/`, `CHANGELOG` | Upstream packaging and CI. The scripts do not use them.                 |
-
-The `deb` scripts support Ubuntu. The `rpm` scripts support Rocky, RHEL, AlmaLinux, and other RHEL-family systems.
+| `lua/anti_ddos_challenge.lua`              | Pinned upstream WAF, installed as `/etc/nginx/lua/waf.lua`              |
+| `config/nginx-waf.conf`                    | `http` block snippet that enables the WAF on all sites                  |
+| `config/waf-local-overrides.lua`           | Local secret and WAF rule tables                                        |
+| `config/waf-ban.lua`                       | Fast-path ban check, extra request checks, and exponential IP banning   |
+| `config/waf-stats.lua`                     | WAF counters as JSON on `http://127.0.0.1:9180/ddos_stats`              |
+| `scripts/deploy.sh`                        | Copies repo files over `ssh` and runs the install or update script      |
+| `scripts/install-deb.sh`, `install-rpm.sh` | First install: generates the server secret, then runs the update script |
+| `scripts/update-deb.sh`, `update-rpm.sh`   | Update: builds the Lua module if needed, then installs WAF files        |
+| `scripts/lib/common.sh`                    | Shared module build, file sync, backup, rollback, and reload logic      |
+| `tests/`                                   | Automated tests for scripts, rules, linearity, bans, and stats          |
+| `debian/`, `rpm/`, `.github/`, `CHANGELOG` | Unmodified upstream packaging and CI files                              |
 
 ## Deploy
 
-Run this command from this workspace:
+Run this command from the repository root:
 
 ```bash
 scripts/deploy.sh user@server
 ```
 
-The command copies `scripts/`, `config/`, and `lua/` to `/opt/nginx-waf` on the server.
-On a new server, it then runs the install script. On an installed server, it runs the update script.
-The server does not need access to this repo. It needs only ssh and sudo for `user`.
+The command copies `scripts/`, `config/`, and `lua/` to `/opt/nginx-waf` on the target server.
+On a new server, it runs the install script.
+On an installed server, it runs the update script.
+The target server needs only `ssh` and `sudo` access for `user`.
+It does not need direct access to this git repository.
 
-The command tells you before ssh or sudo can ask for a password:
+Both remote steps reuse one `ssh` connection, so `ssh` asks for a password only once.
+The deploy script announces each `ssh` or `sudo` password prompt before it runs:
 
 ```text
 [08:57:01] INFO: Connecting to user@server over ssh; type the ssh password of the remote user if ssh asks for it
@@ -51,18 +52,16 @@ user@server's password:
 [sudo] password for user on server:
 ```
 
-Both steps use one ssh connection, so ssh asks for the password only once.
+Each script prints one line per step with a timestamp and a level:
 
-Each script prints one line for each step, with the time and a level:
+- `INFO` on stdout: a step starts or finishes normally.
+- `WARN` on stdout (yellow on a terminal): the script continues, but the operator must review the notice.
+- `ERROR` on stderr: the script stops and restores the previous files.
 
-- `INFO` on stdout: a step starts or ends normally.
-- `WARN` on stdout, in yellow on a terminal: the script continues, but you must know about it. Examples: the update hook is not installed, or the LuaJIT JIT is off.
-- `ERROR` on stderr: the script stops. The line before it names the step that failed.
-  The scripts restore the previous files before they stop.
+Set `NO_COLOR=1` to disable terminal color on `WARN` lines.
+Output to a file or pipe has no color.
 
-To get `WARN` without color, set `NO_COLOR=1`. Output to a file or a pipe has no color.
-
-To do the same steps manually, copy the three directories into one root-owned directory on the server:
+To copy the files manually, place all three directories into one root-owned directory on the server:
 
 ```bash
 scp -r scripts config lua user@server:/tmp/nginx-waf/
@@ -72,57 +71,53 @@ sudo cp -r /tmp/nginx-waf/scripts /tmp/nginx-waf/config /tmp/nginx-waf/lua /opt/
 sudo chown -R root:root /opt/nginx-waf
 ```
 
-Keep `/opt/nginx-waf` on the server. Each update and the package-manager hook use the files in it.
+Keep `/opt/nginx-waf` on the server because later updates and package-manager hooks read from it.
 
 ## Install and update
 
-| Platform | First install                                | Update                                      |
-| -------- | -------------------------------------------- | ------------------------------------------- |
-| Ubuntu   | `sudo /opt/nginx-waf/scripts/install-deb.sh` | `sudo /opt/nginx-waf/scripts/update-deb.sh` |
-| RPM      | `sudo /opt/nginx-waf/scripts/install-rpm.sh` | `sudo /opt/nginx-waf/scripts/update-rpm.sh` |
+| Package type         | First install                                | Update                                      |
+| -------------------- | -------------------------------------------- | ------------------------------------------- |
+| `deb` (`apt`/`dpkg`) | `sudo /opt/nginx-waf/scripts/install-deb.sh` | `sudo /opt/nginx-waf/scripts/update-deb.sh` |
+| `rpm` (`dnf`)        | `sudo /opt/nginx-waf/scripts/install-rpm.sh` | `sudo /opt/nginx-waf/scripts/update-rpm.sh` |
 
-The install script runs the update script. The update script does these steps:
+The install script generates a per-server secret and calls the update script.
+The update script performs these steps:
 
-1. It checks the Lua module of nginx, and builds the module when one of these conditions is true:
-    - An nginx upgrade left the module on the old version. The script then restarts nginx, because a reload keeps the old nginx binary.
-    - The module has no OpenSSL support. Upstream needs `ngx.hmac_sha1`, and only a module with OpenSSL has it. The script then restarts nginx.
-    - nginx has no Lua module. The script then adds `load_module` lines to the top of the main `nginx.conf`, and `lua_package_path` to its `http` block. If `nginx -t` then fails, the script restores `nginx.conf`.
-2. It prepares the new WAF files:
-    - `lua/anti_ddos_challenge.lua` without changes, as `/etc/nginx/lua/waf.lua`.
-    - `config/waf-local-overrides.lua` with the secret of the server, `config/waf-ban.lua`, and `config/nginx-waf.conf`.
-    - If SELinux is in Enforcing mode and the boolean `httpd_execmem` is off, `jit.off()` at the end of the overrides file.
-      Without `jit.off()`, each request stops the worker with `Lua VM crashed, reason: runtime code generation failed`, because SELinux does not let nginx create executable memory for the LuaJIT JIT.
-      With `jit.off()`, Lua runs without the JIT. The SELinux policy does not change.
-3. When the new files are the same as the installed files, it goes to step 6.
-4. It backs up the installed files to `/var/backups/nginx-waf/<timestamp>/`, then installs the new files.
-   If nginx does not load `waf.conf`, it adds `include /etc/nginx/conf.d/waf.conf;` to the `http` block of the main `nginx.conf`.
-   If `nginx.conf` already contains the WAF directives from a manual setup, the include replaces them.
-   It restores the old files and `nginx.conf` when `nginx -t` fails, or when nginx still does not load `waf.conf`.
+1. It checks the nginx Lua module and builds it from source when any of these conditions holds:
+    - An nginx upgrade left the module on an older binary version. The script then restarts nginx.
+    - The module lacks OpenSSL support for `ngx.hmac_sha1`. The script then restarts nginx.
+    - nginx has no Lua module. The script adds `load_module` and `lua_package_path` to the main `nginx.conf`, and restores it if `nginx -t` fails.
+2. It stages the WAF files:
+    - `lua/anti_ddos_challenge.lua` verbatim as `/etc/nginx/lua/waf.lua`.
+    - `config/waf-local-overrides.lua` with the server secret, `config/waf-ban.lua`, `config/waf-stats.lua`, and `config/nginx-waf.conf`.
+    - If SELinux runs in Enforcing mode and `httpd_execmem` is off, the script appends `jit.off()` to the staged overrides file.
+      Without `jit.off()`, LuaJIT stops worker processes because SELinux blocks executable memory generation.
+3. If the staged files match the installed files, the script skips to step 6.
+4. It backs up the installed files to `/var/backups/nginx-waf/<timestamp>/` and copies the staged files into place.
+   If nginx does not load `waf.conf`, the script removes duplicate inline WAF directives from `nginx.conf` and adds `include /etc/nginx/conf.d/waf.conf;`.
+   If `nginx -t` fails, the script restores the previous files and `nginx.conf`.
 5. It reloads nginx.
-6. It installs the package-manager hook. See [nginx upgrades](#nginx-upgrades).
+6. It installs the package-manager hook.
 
-The module build goes to `/usr/local/src/nginx-lua`. It contains LuaJIT, lua-resty-core, and the ndk and lua modules.
-The update script installs only the build packages that are missing, with apt on Ubuntu and with dnf on RPM.
+The module build uses `/usr/local/src/nginx-lua` for LuaJIT, `lua-resty-core`, and the nginx modules.
+The update script installs only missing build packages through the system package manager.
 
 ### nginx upgrades
 
-After an nginx upgrade, the source-built ndk and lua modules stay on the old version. nginx then cannot reload or start.
-The update script rebuilds the modules from `BUILD_DIR` and restarts nginx.
-It also installs a package-manager hook that runs the update script immediately after a package upgrade. You do not need a cron job.
+After an nginx package upgrade, source-built modules no longer match the new nginx binary.
+The update script rebuilds those modules from `BUILD_DIR` and restarts nginx.
+It also installs a package-manager hook to run the update script automatically after upgrades:
 
-- RPM: a dnf `post-transaction-actions` hook runs `update-rpm.sh` after each nginx package upgrade.
-- Ubuntu: apt has no hook for one package. A dpkg `Post-Invoke` hook in `/etc/apt/apt.conf.d/99nginx-waf` runs `update-deb.sh` after each package run.
-  That run changes nothing when nginx and the WAF files did not change.
+- On `rpm` systems (`dnf4`): a `post-transaction-actions` hook runs `update-rpm.sh` after nginx package upgrades.
+- On `deb` systems: a `dpkg` `Post-Invoke` hook in `/etc/apt/apt.conf.d/99nginx-waf` runs `update-deb.sh` after package runs.
 
-The hook builds and runs code as root.
-So the script installs the hook only when these conditions are true for `/opt/nginx-waf`, `BUILD_DIR`, and each parent directory:
+Because the hook runs as root, the script installs it only when `/opt/nginx-waf`, `BUILD_DIR`, and every parent directory meet both conditions:
 
-- Root owns them.
-- Only root has write access to them.
+- Root owns the directory.
+- Neither group nor others can write to the directory.
 
-Otherwise, the script removes an old hook and shows a warning.
-A build by the scripts goes to `/usr/local/src/nginx-lua`, which meets these conditions.
-An older manual build in `~/build/nginx-lua` does not. Move it one time, and the update script then uses the new path:
+If either condition fails, the script removes any old hook and prints a warning.
+To fix a build directory owned by a regular user, move it and lock its permissions:
 
 ```bash
 sudo mv ~/build/nginx-lua /usr/local/src/nginx-lua
@@ -130,236 +125,174 @@ sudo chown -R root:root /usr/local/src/nginx-lua
 sudo chmod -R go-w /usr/local/src/nginx-lua
 ```
 
-On RPM, the hook needs dnf4, as on Rocky, RHEL, and AlmaLinux 8 and 9.
-If the script cannot install the dnf plugin, it shows a warning. Then you must run `update-rpm.sh` manually after each nginx upgrade.
+If the `dnf4` plugin is unavailable on an `rpm` system, the script prints a warning.
+In that case, run `update-rpm.sh` manually after each nginx upgrade.
 
 ## WAF behavior
 
-### All sites
+### Global scope
 
-The installed `waf.conf` contains `access_by_lua_file /etc/nginx/lua/waf-ban.lua;` in the `http` block. `waf-ban.lua` runs the upstream WAF, `/etc/nginx/lua/waf.lua`.
-Thus the WAF is active on all sites and paths immediately after the install. You do not edit the site configs.
+The installed `waf.conf` sets `rewrite_by_lua_file`, `access_by_lua_file`, and `log_by_lua_file` to `/etc/nginx/lua/waf-ban.lua` in the `http` block.
+This activates the WAF on all sites without editing individual site configs.
 
-To turn off the WAF for one `location`, add `rewrite_by_lua_block { return }` and `access_by_lua_block { return }` to it.
-These handlers replace the handlers from the `http` block. With only the access handler, the `waf-ban.lua` checks of the rewrite phase still run.
+To disable the WAF on one `location`, add both `rewrite_by_lua_block { return }` and `access_by_lua_block { return }` to that `location`.
+Overriding only the access handler leaves the rewrite-phase checks active.
 
 ### WAF rules
 
-`config/waf-local-overrides.lua` contains the rules. A request that matches a rule gets `403`.
-The rules check the request path, each decoded query value, and some header values:
+`config/waf-local-overrides.lua` defines the local rule tables.
+A request that matches a rule receives `403`.
+The rules inspect these attack classes across request components:
 
-| Attack                                                    | Checked in                                                          |
-| --------------------------------------------------------- | ------------------------------------------------------------------- |
-| SQL injection                                             | Query values, `Cookie`, `Referer`, `User-Agent`, `X-Forwarded-For`  |
-| XSS                                                       | Query values, `Cookie`, `Referer`, `User-Agent`                     |
-| Command injection                                         | Query values, and Shellshock in all headers                         |
-| File inclusion and path traversal                         | Path, query values                                                  |
-| SSRF                                                      | Query values                                                        |
-| Java code injection (Log4Shell, SpEL) and deserialization | Query values, all headers                                           |
-| PHP code injection and object injection                   | Query values, PHP tags in all headers, object injection in `Cookie` |
-| XML external entities (XXE)                               | Query values                                                        |
-| ASP, JSP, and ERB code injection                          | Query values                                                        |
-| Sensitive files and admin paths                           | Path                                                                |
+| Attack                             | Inspected surfaces                                                                     |
+| ---------------------------------- | -------------------------------------------------------------------------------------- |
+| SQL injection                      | Query values, query names, cookies, bodies, `Referer`, `User-Agent`, client IP headers |
+| XSS                                | Query values, query names, cookies, bodies, `Referer`, `User-Agent`                    |
+| Command injection                  | Query values, query names, cookies, bodies, Shellshock in all headers                  |
+| File inclusion and path traversal  | Raw path, decoded path, query values, query names, cookies, bodies                     |
+| SSRF                               | Query values, query names, cookies, bodies                                             |
+| Code injection and deserialization | Query values, query names, cookies, bodies, all headers                                |
+| XML external entities (XXE)        | Query values, query names, cookies, XML bodies                                         |
+| Sensitive files and admin paths    | Raw path, decoded path                                                                 |
 
-The path rules check the path twice: as the client sent it, and after nginx decodes `%XX` and resolves `..`.
-So `/xmlrpc%2ephp` gets `403` like `/xmlrpc.php`, because nginx and Tomcat decode the path before they pick a file.
+Path rules run twice: once against the raw path (upstream) and once against the decoded, normalized `$uri` (`waf-ban.lua`).
+This blocks percent-encoded paths such as `/xmlrpc%2ephp` before backend servers decode them.
 
-Upstream checks only the query values.
-`waf-ban.lua` uses the query value rules on more parts of the request:
+Upstream inspects only query values.
+`waf-ban.lua` applies the same query rules to more surfaces:
 
-- The name of each query argument. A hit gets `403`.
-- Each cookie name and value, after `waf-ban.lua` decodes them as PHP does.
-  With `WAF_cookie_block = true`, the default, a hit gets `403` and counts toward a ban.
-  `WAF_cookie_skip` lists the cookie names that are not checked, for example the `sl-session` token of a SafeLine proxy.
-- The request body, up to 128 KB:
-    - each urlencoded field
-    - each multipart field that is not a file
-    - each JSON object key and each JSON value, with the rules for its object key; JSON that does not parse, or that nests deeper than 100 levels or holds more than 1000 keys and values, as one text
-    - an XML body (`xml` or `+xml` type, such as SWORDv2 Atom or SOAP), with one XML rule instead of the query rules: a `DOCTYPE` or `ENTITY` declaration (XXE), XInclude, XSLT, a Java `XMLDecoder` object, a PHP tag, a `<script>` tag, a Log4Shell lookup, or Java template injection
-    - a `text/plain` body or a body without a type, as JSON when it starts with `{` or `[`, and as XML when it starts with `<`; other text is not checked
+- Every query argument name. A hit returns `403`.
+- Every decoded cookie name and value when `WAF_cookie_block` is `true` (default).
+  `WAF_cookie_skip` lists cookie name patterns to skip, such as opaque proxy session tokens.
+- Request bodies up to 128 KB when `WAF_body_block` is `true` (default):
+    - URL-encoded form fields.
+    - Non-file multipart form fields.
+    - JSON keys and values. `waf-ban.lua` scans unparseable JSON, JSON deeper than 100 levels, or JSON with over 1,000 entries as decoded text.
+    - XML bodies (`xml` or `+xml` media types), checked with a dedicated linear XML rule for XXE, XInclude, XSLT, script tags, and template injection.
+    - `text/plain` or untyped bodies that start with `{`, `[`, or `<`, scanned as JSON or XML.
 
-A urlencoded or multipart body with more than 1000 fields gets `413`.
-A urlencoded, JSON, or XML body larger than 128 KB also gets `413`.
-A `text/plain` body larger than 128 KB is not checked.
-A multipart body can be larger than 128 KB, because uploaded files do not count.
-`waf-ban.lua` reads it in 1 MB steps, skips the file parts, and still checks all other fields, up to 128 KB of field text together; more field text gets `413`.
-A multipart part counts as a file only when its `Content-Disposition` has a `filename` parameter outside a quoted value, as PHP reads it.
-A `boundary` that PHP and Tomcat read differently, or a part with two `Content-Disposition` headers, gets `403`.
+URL-encoded, JSON, or XML bodies over 128 KB return `413`.
+URL-encoded or multipart bodies with more than 1,000 fields also return `413`.
+`text/plain` bodies over 128 KB stay unchecked.
+Multipart uploads can exceed 128 KB because `waf-ban.lua` streams them in 1 MB chunks, skips file parts (`filename` parameter), and caps non-file field text at 128 KB.
+Ambiguous multipart boundaries or duplicate `Content-Disposition` headers return `403`.
 
-With `WAF_body_block = true`, the default, a body hit gets `403` and counts toward a ban.
-`WAF_body_skip` lists the paths whose bodies are not checked, for example the WordPress editors, where HTML and SQL words are normal content.
-For a false positive on one path or cookie, add it to `WAF_body_skip` or `WAF_cookie_skip`.
-To tune a new site, set `WAF_body_block` or `WAF_cookie_block` to `false`. Then a hit only writes a `Would block (log only)` line to the error log, and a `413` is not sent.
-Upstream's own POST table stays empty.
-When a POST rule exists, upstream reads the whole body of each POST request into memory, uploads included.
+`WAF_body_skip` lists decoded `$uri` patterns whose bodies stay unchecked, such as rich-text editor endpoints.
+To tune a new site without blocking, set `WAF_body_block` or `WAF_cookie_block` to `false`.
+In log-only mode, hits write `Would block (log only)` to the error log and do not return `403` or `413`.
+`WAF_POST_Request_table` stays empty so upstream never buffers large upload bodies into memory.
 
-The rules do not check uploaded files.
-Instead, a request for a script in an upload directory (`wp-content/uploads`, `/uploaded_files`, `/files`, `/repository`, `/images/docs`, `/images/persons`) gets `403`, so an uploaded webshell cannot run.
-The script extensions are `php` (also `php5` and similar), `pht`, `phtml`, `phar`, `jsp`, `jspx`, `asp`, `aspx`, `cgi`, `pl`, and `sh`, also in double extensions such as `shell.php.jpg`.
+The WAF does not scan uploaded file contents.
+Instead, path rules return `403` for script extensions (including double extensions) inside common upload directories listed in `config/waf-local-overrides.lua`.
 
-CSRF checks need the `Origin` header, so the rules do not cover CSRF.
+Upstream parses only the first 100 query arguments and the first 100 headers.
+`waf-ban.lua` rejects requests that exceed either limit with an uncounted `403`.
 
-`config/nginx-waf.conf` defines the `waf_login` rate-limit zone: 10 login POSTs per minute for each address.
-The zone has no effect on a site until the site adds `limit_req zone=waf_login burst=5 nodelay;` to its `server` block or its login `location`.
-The zone counts POSTs to these paths, at the site root or one directory below it:
+### Login rate limiting
 
-- WordPress: `wp-login.php`
-- SLiMS: `index.php`, but not under `admin/` or `wp-admin/`
-- DSpace: `password-login`, `rest/login`, and `server/api/authn/login`
-- INLISLite: `site/login`, also up to two directories below the site root, and `index.php` under `backoffice/`, `backend/`, `keanggotaan/`, or `opac/`
-  Without pretty URLs, INLISLite sends every form of these modules to `index.php`, so the limit also counts admin form POSTs.
-- Other apps: `login` and `auth/login`
+`config/nginx-waf.conf` defines an opt-in `waf_login` rate-limit zone set to 10 POST requests per minute per address.
+It covers common login endpoints defined in `$waf_login_key` inside `config/nginx-waf.conf`.
+The zone stays inactive until a `server` or `location` block adds `limit_req zone=waf_login burst=5 nodelay;`.
+Requests above the limit receive the site's `limit_req_status` (or nginx default `503`), which never counts toward a ban.
 
-A request above the limit gets `429` when the server sets `limit_req_status 429`, and `503` when it does not.
-Neither response counts toward a ban.
+### Exponential IP bans
 
-Upstream checks only the first 100 query arguments and the first 100 headers.
-`waf-ban.lua` rejects a request with more query arguments or more headers with `403`, and this `403` does not count toward a ban.
+Upstream returns `403` on a WAF rule hit without banning the client address.
+`waf-ban.lua` adds temporary, in-memory exponential banning with minimal latency:
 
-### Bans
+- Bans live only in nginx shared memory (`waf_bans`), isolated from short-lived strike counters (`waf_strikes`).
+  No external database or disk I/O runs on the request path.
+  A reload keeps active bans and ban counts, while a full restart clears them.
+- On every request, the rewrite phase checks `waf_bans` first and immediately returns `403` before running header logic or request parsers.
+- The log phase counts WAF `403` responses per client address.
+  After 5 hits in 10 minutes, the address receives a 1-hour ban.
+- Each repeat ban doubles the duration: 1, 2, 4, 8, and up to 512 hours (tenth ban and later).
+  The ban history expires 30 days after the last ban ends.
+- Ban claiming uses an atomic shared-dict `add`, so parallel requests or HTTP/2 bursts ban an address only once.
+- Private and loopback addresses are never banned.
+- `403` responses from backend applications, earlier `return 403` rules, or content-phase checks (such as `autoindex off`) do not count.
+  `deny` rules in a site location run before the Lua access handler and still count.
+- Requests whose User-Agent matches `AI_AGENTS` or `CRAWLERS` require 50 hits in 10 minutes before a ban.
+  Generic HTTP clients still trigger a ban at 5 hits.
 
-A ban rejects all requests from one client address for a time.
+Edit `LIMIT`, `WINDOW`, `BAN`, `CRAWLER_LIMIT`, `CRAWLER_WINDOW`, and `BAN_HISTORY_TTL` in `config/waf-ban.lua` to adjust these thresholds.
 
-The WAF rules apply to all requests. A request that matches a rule gets `403`, but upstream does not ban the address.
-`waf-ban.lua` adds that ban:
-
-- It counts the `403` responses from the WAF for each client address. The WAF sends `403` only for a request with an attack payload, because the User-Agent blacklist is empty.
-- After 5 of them in 10 minutes, it bans the address for 1 hour.
-- Each later ban of the same address is two times longer than the ban before it.
-  So the next bans last 2 hours, 4 hours, 8 hours, and so on, up to 512 hours (the tenth ban and all later bans).
-  The ban and its count are in the `waf_bans` shared dict, separate from `waf_strikes`, so a reload keeps them and only an nginx restart clears them.
-  The ban count expires 30 days after the last ban of the address ends.
-- It does not count a `403` that ends while the address is already banned, so one burst of parallel HTTP/2 requests bans only once.
-- It does not count a `403` from the application, for example DSpace, or from a `return 403` in the site config.
-- It does not count a `403` that nginx sends after the WAF let the request through, for example for a directory without an index file and with `autoindex off`.
-  It counts a `403` from a `deny` rule in the site config, because `deny` runs before the WAF. So a `deny all` trap for scanner paths still leads to a ban.
-- It never bans private or loopback addresses, so it cannot ban a reverse proxy.
-- It bans crawlers, AI agents, and Turnitin only after 50 of them in 10 minutes. These are User-Agents that contain `bot`, `crawl`, `spider`, `slurp`, `turnitin`, or `facebookexternalhit`, and the AI agent families.
-  A crawler can follow a link with an attack payload that an attacker put on another site. The WAF rejects that request with `403`, and a few such links do not ban the crawler.
-  Any client can send a crawler User-Agent, so the higher limit stops an attacker who uses one from probing the rules without end.
-- It bans generic HTTP clients, for example `curl` and `python-requests`, when they send attack payloads.
-
-To change these numbers, edit `LIMIT`, `WINDOW`, `BAN`, `CRAWLER_LIMIT`, and `CRAWLER_WINDOW` in `config/waf-ban.lua`.
-
-Upstream bans an address for 24 hours for these causes:
-
-- More than 10,000 requests in 500 ms.
-- More than 1,000 failed JavaScript challenges in 1 second.
-- A request method that upstream prohibits: `CONNECT` or `TRACE`.
-- A forged `X-Forwarded-For` or `CF-Connecting-IP` header.
-
-Upstream also prohibits `OPTIONS`, `PUT`, `PATCH`, and `DELETE`, but `config/waf-local-overrides.lua` removes them from that list.
-REST clients, for example the DSpace REST API, SWORDv2, and the WordPress REST API, send these methods, and Microsoft Office sends `OPTIONS` before it opens a document link.
-These requests now go to the application.
-Upstream also rejects a request of 1 MB or more and a small body sent with `Expect: 100-continue`.
-`config/waf-local-overrides.lua` turns off both checks, so the `client_max_body_size` of nginx sets the body size limit.
-
-Upstream and `waf-ban.lua` keep their bans in nginx shared memory. A reload keeps the bans. Only a restart of nginx removes them.
+Upstream also applies a 24-hour ban for flood bursts (over 10,000 requests in 500 ms), failed JavaScript challenge floods, forbidden methods (`CONNECT`, `TRACE`), or forged proxy headers.
+`config/waf-local-overrides.lua` allows `OPTIONS`, `PUT`, `PATCH`, and `DELETE` for REST APIs and delegates body size limits to nginx `client_max_body_size`.
 
 ### Stats
 
-`waf-stats.lua` shows the WAF counters as JSON. It is an adapted version of the example in the upstream wiki page [Anti-DDoS Stats and Metrics](https://github.com/C0nw0nk/Nginx-Lua-Anti-DDoS/wiki/Anti%E2%80%90DDoS-Stats-and-Metrics).
-`config/nginx-waf.conf` serves it only on the loopback address, because the output lists client addresses:
+`config/waf-stats.lua` exposes live counters as JSON on loopback only:
 
 ```bash
-ssh <server> 'curl -s http://127.0.0.1:9180/ddos_stats' | jq
+ssh user@server 'curl -s http://127.0.0.1:9180/ddos_stats' | jq
 ```
 
-Port 9180 is far from the DSpace ports (8080, 8787, 5432, and 19123).
-The WAF does not run on this request, so the request does not change the stats.
+The stats endpoint disables the rewrite and access WAF handlers, so polling it does not affect counters.
 
-| Field                   | Meaning                                                                     |
-| ----------------------- | --------------------------------------------------------------------------- |
-| `total_traffic_allowed` | Requests in the current upstream rate limit window, not since nginx started |
-| `total_traffic_blocked` | Blocked requests in the current rate limit window                           |
-| `requests_blocked`      | Addresses that upstream blocked in the current block duration               |
-| `requests_per_ip`       | Requests of each active address in the current rate limit window            |
-| `js_puzzle_per_ip`      | Failed JavaScript challenges of each address                                |
-| `blocked_ips_ttl`       | Seconds until the upstream ban of each address ends                         |
-| `waf_bans`              | Addresses that `waf-ban.lua` bans now                                       |
-| `keys_listed`           | Keys read from the `antiddos` shared dict, at most 10,000                   |
+| Field                   | Meaning                                                |
+| ----------------------- | ------------------------------------------------------ |
+| `total_traffic_allowed` | Allowed requests in the current upstream window        |
+| `total_traffic_blocked` | Blocked requests in the current upstream window        |
+| `requests_blocked`      | Addresses currently blocked by upstream                |
+| `requests_per_ip`       | Active request count per address in the current window |
+| `js_puzzle_per_ip`      | Failed JavaScript challenges per address               |
+| `blocked_ips_ttl`       | Remaining seconds for each upstream ban                |
+| `waf_bans`              | Active bans currently stored in `waf_bans`             |
+| `keys_listed`           | Number of keys read from `antiddos` (capped at 10,000) |
 
-The 10,000 limit is necessary because nginx locks the shared dict while it lists the keys, and the WAF waits for that lock.
-The endpoint makes the JSON itself, because the Lua module that `build_lua_module` builds has no `cjson` library.
-The counters are in shared memory, so a restart of nginx sets them to zero.
+Key scans cap at 10,000 entries to bound shared-dict lock time.
+The script serializes JSON directly so the module build does not depend on `cjson`.
 
 ### JavaScript challenge
 
-The JavaScript challenge is automatic. Upstream turns on the challenge for all paths when it bans 100 or more addresses.
-When upstream bans fewer than 100 addresses, no request gets the challenge.
+Upstream enables the JavaScript challenge globally when it bans 100 or more addresses.
+Non-browser API and OAI-PMH endpoints listed in `config/waf-local-overrides.lua` skip the automatic challenge while keeping WAF rules and flood protection active.
+Whitelisted crawlers in `user_agent_whitelist_table` also skip the challenge.
 
-API clients and OAI-PMH harvesters are not browsers. They cannot solve the JavaScript challenge.
-These paths skip the automatic JavaScript challenge in `config/waf-local-overrides.lua`, while all WAF rules and flood protection stay active:
+### User-Agent policy
 
-- OAI-PMH: `/oai`, `/server/oai`, `/opac/oai` (also one directory below the site root), and SLiMS `index.php?p=oai`
-- REST APIs: `/server/api/`, `/swordv2/`, `/rest/`, `/wp-json/`, and `/api/` (the last two also one directory below the site root)
-
-The patterns start at the host name, so a query value such as `?x=/oai/` does not skip the challenge.
-Only the User-Agent whitelist skips the challenge on other paths, for Googlebot, Bingbot, and Turnitin.
-
-### User-Agent lists
-
-Crawlers, scrapers, AI agents, and Turnitin can access the sites, with strict limits. Only an attack payload causes a ban.
-So `localized_global.user_agent_blacklist_table` is empty. It replaces the upstream list, which rejected `curl`, `python`, `ChatGPT`, `GPTBot`, `OAI-`, empty User-Agents, and others with `403`.
-Each `403` counts toward a ban, so the upstream list would ban these clients.
-
-The nginx config of each site can limit crawlers with `limit_req`.
-AI agents get a strict limit in all sites. `waf-ban.lua` limits each AI agent family to 10 requests per minute, for all addresses together.
-For example, all `ChatGPT-User` requests share one limit. A request above the limit gets `429` with `Retry-After: 60`. A `429` does not count toward a ban.
-`AI_AGENTS` in `config/waf-ban.lua` lists the families, for example `gptbot`, `chatgpt-user`, `claude-user`, and `perplexitybot`.
-To change the limit, edit `AI_LIMIT` and `AI_WINDOW` in the same file.
-
-Googlebot, Bingbot, and the Turnitin crawler skip the blacklist and the challenge, also during an attack. Google Scholar uses Googlebot.
-`localized_global.user_agent_whitelist_table` matches their User-Agents. The WAF rules still apply to them.
-A client can fake its User-Agent. With a fake crawler User-Agent, the client also skips the challenge.
+Crawlers, scrapers, and AI agents stay allowed under rate limits.
+Only attack payloads trigger a ban, so `user_agent_blacklist_table` stays empty.
+`waf-ban.lua` limits each AI agent family listed in `AI_AGENTS` to 10 requests per minute across all addresses and returns `429` with `Retry-After: 60`.
+`429` responses never count toward a ban.
+Edit `AI_LIMIT`, `AI_WINDOW`, and `AI_AGENTS` in `config/waf-ban.lua` to adjust this limit.
 
 ### Client address behind a proxy
 
-Upstream can get the client address from `X-Forwarded-For` or `CF-Connecting-IP`.
-It does this only when the request comes from an address in its `proxy_header_table`.
-The default list contains loopback, private ranges, and Cloudflare.
-If your reverse proxy or load balancer has a different public address, set `localized_global.proxy_header_table` in `config/waf-local-overrides.lua`.
-That table replaces the default list.
-Without it, all visitors share the address of the proxy and its rate limits.
+Upstream reads `X-Forwarded-For` or `CF-Connecting-IP` only when the peer address appears in `proxy_header_table`.
+If your reverse proxy uses another public address, define `localized_global.proxy_header_table` in `config/waf-local-overrides.lua`.
 
-If nginx uses `set_real_ip_from` and `real_ip_header X-Forwarded-For`, nginx already replaces the proxy address with the client address.
-Upstream then sees a public address together with `X-Forwarded-For`, or with a `CF-Connecting-IP` that the proxy passed on. Upstream calls this proxy impersonation and bans the visitor for 24 hours.
-To prevent this, `waf-ban.lua` removes `X-Forwarded-For` and `CF-Connecting-IP` from requests where the realip module changed the address.
-Upstream then uses the client address from nginx. A request from a public address that `set_real_ip_from` does not list keeps its headers.
-A request from a private address that `set_real_ip_from` does not list, for example a SafeLine proxy, loses only `CF-Connecting-IP`.
-Upstream trusts private addresses, and only Cloudflare sets this header, so behind another proxy the client could choose its own address.
-Without the realip module, `waf-ban.lua` removes no header.
+When nginx `realip` replaces the peer address with the client address, `waf-ban.lua` clears consumed `X-Forwarded-For` and `CF-Connecting-IP` headers so upstream does not mistake them for spoofed proxy headers.
+For requests arriving from an unlisted private proxy address, `waf-ban.lua` clears only `CF-Connecting-IP`.
+Without the `realip` module, `waf-ban.lua` clears no headers.
 
 ## Local rules
 
-- To change a rule, edit `config/waf-local-overrides.lua`. Then run `scripts/deploy.sh user@server`.
-- Each table in that file **replaces** the upstream default table. It does not add to it. Keep the upstream defaults that you still need.
-  The upstream defaults change only when you merge a newer upstream commit.
-- Keep the `CHANGE_ME_TO_LONG_RANDOM_SECRET` placeholder in the repo.
-  The first install makes the real secret. The secret is only in `/etc/nginx/lua/waf-local-overrides.lua` on the server.
+- Edit `config/waf-local-overrides.lua` and run `scripts/deploy.sh user@server` to deploy changes.
+- Each table in `config/waf-local-overrides.lua` replaces the upstream default table completely.
+- Keep `CHANGE_ME_TO_LONG_RANDOM_SECRET` as the placeholder in git.
+  The install script writes the real secret only on the server.
 
 ## Upstream updates
 
-`lua/anti_ddos_challenge.lua` is the file of the upstream commit that this fork last merged.
-The fork does not follow upstream `master` for two reasons:
+`lua/anti_ddos_challenge.lua` pins the deployed upstream revision.
+`nginx -t` does not compile `waf.lua`, so pinning prevents unreviewed upstream errors from reaching production.
+Keep upstream files unchanged to avoid merge conflicts.
 
-- Upstream changes several times each week.
-- `nginx -t` does not compile `waf.lua`. Thus a defective upstream change can go live without a warning.
-
-Keep the upstream files unchanged, so that a merge has no conflicts.
-In a new clone, add the `upstream` remote one time. The second command disables push to it:
+Configure the read-only `upstream` remote once:
 
 ```bash
 git remote add upstream https://github.com/C0nw0nk/Nginx-Lua-Anti-DDoS.git
 git remote set-url --push upstream DISABLED
 ```
 
-To use a newer upstream commit, do these steps:
+To adopt a newer upstream commit:
 
-1. Run `git fetch upstream`, and read the changes in the upstream `precompile_waf_*_table` functions.
-2. Copy those changes into `tests/test-rules.lua`.
-3. Run `git merge <commit>`, then run the tests.
-4. When the tests pass, push the merge to this fork.
+1. Run `git fetch upstream` and inspect changes in upstream `precompile_waf_*_table` functions.
+2. Mirror those compilation changes in `tests/test-rules.lua`.
+3. Run `git merge <commit>` and run the full test suite.
+4. Push the verified branch to your fork.
 
 ## Test
 
@@ -369,13 +302,14 @@ bash tests/test-scripts.sh
 lua tests/test-rules.lua
 lua tests/test-ban.lua
 lua tests/test-stats.lua
+python3 -I tests/test-linear.py
 ```
 
 ## Credits
 
-The WAF, its JavaScript challenge, and its rule engine are the work of Conor McKnight ([C0nw0nk/Nginx-Lua-Anti-DDoS](https://github.com/C0nw0nk/Nginx-Lua-Anti-DDoS)).
-This fork adds only the install scripts, the local rules, and `waf-ban.lua`.
-To support the upstream author, use the Sponsor button of this repo or the [upstream funding page](https://github.com/C0nw0nk/Nginx-Lua-Anti-DDoS/wiki/funding).
+The upstream WAF, JavaScript challenge, and rule engine are the work of Conor McKnight ([C0nw0nk/Nginx-Lua-Anti-DDoS](https://github.com/C0nw0nk/Nginx-Lua-Anti-DDoS)).
+This fork adds deployment automation, local defense rules, and exponential IP banning.
+To support the upstream author, use the Sponsor button on the upstream repository or the [upstream funding page](https://github.com/C0nw0nk/Nginx-Lua-Anti-DDoS/wiki/funding).
 
 ## License
 
