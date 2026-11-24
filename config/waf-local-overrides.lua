@@ -435,8 +435,9 @@ localized_global.WAF_POST_Request_table = {}
 -- It reads up to 128 KB, where every query rule stays clear of the PCRE match limit even without PCRE JIT; 1 MB values hit that limit.
 -- A larger urlencoded, JSON, or XML body, or a urlencoded or multipart body with more than 1000 fields, gets 413, which never counts toward a ban; a larger text/plain body stays unchecked.
 -- A larger multipart body is an upload: its file parts are skipped and its other fields are still checked, up to 128 KB of field text, or 413.
--- false only logs "Would block (log only) Request body prohibited" for 7 days of tuning; true answers a hit with 403, which counts toward a ban.
-localized_global.WAF_body_block = false
+-- true answers a hit with 403, which counts toward a ban; DSpace's log-only hits on 2026-11-23 were sqlmap-style payloads in /browse and /discover forms.
+-- false only logs "Would block (log only) Request body prohibited", as a fallback for tuning a new site; prefer a WAF_body_skip entry for one false-positive path.
+localized_global.WAF_body_block = true
 -- Lua patterns for $uri, the decoded path, whose bodies stay unchecked, because editors save posts there and HTML or SQL words are normal content.
 -- The WordPress classic and block editors, anchored at the site root so that no path info or subdirectory can borrow the exemption; a WordPress in a subdirectory needs its own entries.
 localized_global.WAF_body_skip = {
@@ -445,9 +446,9 @@ localized_global.WAF_body_skip = {
 }
 
 -- waf-ban.lua also checks each Cookie name and value, URL-decoded as PHP decodes them, with WAF_query_string_Request_table; upstream never reads this setting.
--- Cookies carry tokens, base64, and JSON, so false only logs "Would block (log only) Request cookie prohibited" for 7 days of tuning, like the body check.
--- true answers a hit with 403, which counts toward a ban.
-localized_global.WAF_cookie_block = false
+-- true answers a hit with 403, which counts toward a ban; the rules spare Yii2 signed cookies, PHP serialized strings, and JSON colors, which cookies carry.
+-- false only logs "Would block (log only) Request cookie prohibited", as a fallback for tuning; prefer a WAF_cookie_skip entry for one opaque token cookie.
+localized_global.WAF_cookie_block = true
 -- Lua patterns for cookie names that waf-ban.lua does not check, name and value, because they carry opaque tokens; upstream never reads this setting.
 -- sl-session is the base64 session token of a SafeLine front proxy.
 localized_global.WAF_cookie_skip = { "^sl%-session$" }

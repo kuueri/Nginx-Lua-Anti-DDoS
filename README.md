@@ -169,7 +169,7 @@ Upstream checks only the query values.
 
 - The name of each query argument. A hit gets `403`.
 - Each cookie name and value, after `waf-ban.lua` decodes them as PHP does.
-  With `WAF_cookie_block = false`, a hit only writes a `Would block (log only)` line, because cookies often carry JSON or tokens.
+  With `WAF_cookie_block = true`, the default, a hit gets `403` and counts toward a ban.
   `WAF_cookie_skip` lists the cookie names that are not checked, for example the `sl-session` token of a SafeLine proxy.
 - The request body, up to 128 KB:
     - each urlencoded field
@@ -186,10 +186,10 @@ A multipart body can be larger than 128 KB, because uploaded files do not count.
 A multipart part counts as a file only when its `Content-Disposition` has a `filename` parameter outside a quoted value, as PHP reads it.
 A `boundary` that PHP and Tomcat read differently, or a part with two `Content-Disposition` headers, gets `403`.
 
-With `WAF_body_block = false`, a body hit only writes a `Would block (log only)` line to the error log.
-Set `WAF_body_block` to `true` after one week without false positives.
-Then a body hit gets `403` and counts toward a ban.
+With `WAF_body_block = true`, the default, a body hit gets `403` and counts toward a ban.
 `WAF_body_skip` lists the paths whose bodies are not checked, for example the WordPress editors, where HTML and SQL words are normal content.
+For a false positive on one path or cookie, add it to `WAF_body_skip` or `WAF_cookie_skip`.
+To tune a new site, set `WAF_body_block` or `WAF_cookie_block` to `false`. Then a hit only writes a `Would block (log only)` line to the error log, and a `413` is not sent.
 Upstream's own POST table stays empty.
 When a POST rule exists, upstream reads the whole body of each POST request into memory, uploads included.
 

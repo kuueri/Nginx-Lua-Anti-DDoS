@@ -864,6 +864,8 @@ assert(
 )
 assert(g.content_type_fix == false, "content_type_fix must be false, or every request reaches the backend twice")
 assert(#g.WAF_POST_Request_table == 0, "WAF_POST_Request_table must stay empty")
+assert(g.WAF_body_block == true, "WAF_body_block must be true")
+assert(g.WAF_cookie_block == true, "WAF_cookie_block must be true")
 if failed > 0 then
 	os.exit(1)
 end
