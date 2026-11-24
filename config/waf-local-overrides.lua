@@ -188,18 +188,20 @@ localized_global.WAF_query_string_Request_table = {
 	},
 	-- SQLi, boolean tautology such as ' or '1'='1 or 1 and 1=1.
 	-- The operator must be followed by a quote or digit, so titles such as "Teachers' and students' perceptions" pass.
-	-- An inline comment counts as a space, as in ')/**/AND/**/('a'='a, which sqlmap sent to DSpace on 2026-11-18; (?:\s|/\*[^*]*+\*/)*+ stays possessive to keep the scan linear.
+	-- An inline comment counts as a space, as in ')/**/AND/**/('a'='a, which sqlmap sent to DSpace on 2026-11-18; (?:\s|/\*[^*]*+\*+/)*+ stays possessive to keep the scan linear, and \*+/ also closes /***/.
 	-- Word operators need (?![a-z0-9_]) after them, because SQL lexes "or2" as an identifier, not "or 2", and otherwise base64 tokens such as an OAI resumptionToken holding 9oR2 before "=" match.
+	-- The operand may sit in nested parentheses or carry a sign or !, and LIKE, RLIKE, REGEXP, BETWEEN, or IN ( compare as well as = < >.
+	-- The second branch is a bare TRUE or FALSE operand, which must end the value or meet a quote, comment, or operator, so "Teachers' and true friends" passes.
 	{
 		"(?s).*",
-		[[(?s)(?>.*?['"\d)](?:\s|/\*[^*]*+\*/)*+(?:(?:or|and|xor)(?![a-z0-9_])|\|\||&&)(?:\s|/\*[^*]*+\*/)*+\(?(?:\s|/\*[^*]*+\*/)*+['"\d]).*[=<>].*]],
+		[[(?s)(?:(?>.*?['"\d)](?:\s|/\*[^*]*+\*+/)*+(?:(?:or|and|xor)(?![a-z0-9_])|\|\||&&)(?:\s|/\*[^*]*+\*+/)*+(?:\((?:\s|/\*[^*]*+\*+/)*+)*+(?:[+-]?['"\d]|![\s(]*\d)).*(?:[=<>]|(?<![a-z0-9_])(?:(?:like|rlike|regexp|between)(?![a-z0-9_])|in(?:\s|/\*[^*]*+\*+/)*+\())|.*['"\d)](?:\s|/\*[^*]*+\*+/)*+(?:or|and|xor)(?:\s|/\*[^*]*+\*+/)++(?:not(?:\s|/\*[^*]*+\*+/)++)?(?:true|false)(?:\s|/\*[^*]*+\*+/)*+(?:$|['");]|--|#|/\*|(?:and|or|xor)(?![a-z0-9_])|\|\||&&)).*]],
 	},
 	-- SQLi, a whole value that is a numeric tautology without a comparison, such as 1 or 1, 1 or true, or 1 || 1, optionally ending in a comment.
 	-- Both sides must hold the same number, so a search such as "1 or 2" passes.
 	-- \1 refers to group 1, because upstream's ^(?i)...$ wrapping adds no group, and an inline comment counts as a space, as in 1/**/or/**/1.
 	{
 		"(?s).*",
-		[[(?s)\s*-?(\d+)(?:\s|/\*[^*]*+\*/)*+(?:(?:or|xor|and)(?:\s|/\*[^*]*+\*/)*+(?:-?\1|true|false)|(?:\|\||&&)(?:\s|/\*[^*]*+\*/)*+-?\d+)\s*(?:(?:--|#|/\*).*)?]],
+		[[(?s)\s*-?(\d+)(?:\s|/\*[^*]*+\*+/)*+(?:(?:or|xor|and)(?:\s|/\*[^*]*+\*+/)*+(?:-?\1|true|false)|(?:\|\||&&)(?:\s|/\*[^*]*+\*+/)*+-?\d+)\s*(?:(?:--|#|/\*).*)?]],
 	},
 	-- SQLi, time-based and error-based functions, matched only with their opening parenthesis so "sleep quality" passes.
 	-- substr, substring, and mid count only with two numeric arguments, the blind SQLi probe shape, so "Substring (computer science)" passes.
@@ -207,30 +209,38 @@ localized_global.WAF_query_string_Request_table = {
 	-- MySQL reads an inline comment as a space, as in SLEEP/**/(5), so the tautology rule's possessive comment token may sit before the parenthesis.
 	{
 		"(?s).*",
-		[[(?s).*(?<![a-z_])(?:(?:sleep|pg_sleep|benchmark|extractvalue|updatexml|load_file|group_concat|concat|concat_ws|name_const|unhex|ifnull|make_set)(?:\s|/\*[^*]*+\*/)*+\(|char(?:\s|/\*[^*]*+\*/)*+\(\s*\d|(?:substr(?:ing)?|mid)(?:\s|/\*[^*]*+\*/)*+\([^()]*,\s*\d+\s*,\s*\d+\s*\)).*]],
+		[[(?s).*(?<![a-z_])(?:(?:sleep|pg_sleep(?:_for|_until)?|benchmark|extractvalue|updatexml|load_file|group_concat|concat|concat_ws|name_const|unhex|ifnull|make_set)(?:\s|/\*[^*]*+\*+/)*+\(|char(?:\s|/\*[^*]*+\*+/)*+\(\s*\d|(?:substr(?:ing)?|mid)(?:\s|/\*[^*]*+\*+/)*+\([^()]*,\s*\d+\s*,\s*\d+\s*\)).*]],
 	},
 	-- SQLi, a quote closed by a comment or terminator, such as admin'-- or admin'#.
+	-- After a double quote, # followed by 3 to 8 hex digits and a quote is a JSON color such as {"color":"#ffffff"}, and ";" must end the value or start a comment or SQL statement.
+	-- A whole value that is a PHP serialized string, also behind Yii2's 64-hex HMAC, passes, because "; ends it by design; Yii2's signed _csrf cookie is a serialized array whose "; never meets those tails.
 	{
 		"(?s).*",
-		[[(?s).*['"]\s*(?:--(?:\s|$)|#|/\*|;).*]],
+		[[(?s)(?!([0-9a-f]{64})?s:\d+:".*";$).*(?:'\s*(?:--(?:\s|$)|#|/\*|;)|"\s*(?:--(?:\s|$)|/\*|#(?![0-9a-f]{3,8}")|;\s*(?:$|--|#|/\*|(?:select|insert|update|delete|drop|alter|create|truncate|exec|declare|waitfor|set)\b))).*]],
 	},
 	-- SQLi, column counting with ORDER BY n closed by a comment or terminator, such as subject' ORDER BY 1-- -, which sqlmap sent to DSpace on 2026-11-18.
 	-- The comment must follow, so a search such as "Law and order by 1998 standards" passes.
 	{
 		"(?s).*",
-		[[(?s).*(?<![a-z_])order(?:\s|/\*[^*]*+\*/)++by(?:\s|/\*[^*]*+\*/)++\d+(?:\s*,\s*\d+)*+(?:\s|/\*[^*]*+\*/)*+(?:--|#|/\*|;).*]],
+		[[(?s).*(?<![a-z_])order(?:\s|/\*[^*]*+\*+/)++by(?:\s|/\*[^*]*+\*+/)++\d+(?:\s*,\s*\d+)*+(?:\s|/\*[^*]*+\*+/)*+(?:--|#|/\*|;).*]],
 	},
 	-- SQLi, subquery.
 	-- An inline comment counts as a space, and MySQL runs the body of a versioned comment, so (/*!50000SELECT*/1) and (/*!50000 SELECT*/1) open a subquery too.
 	{
 		"(?s).*",
-		[[(?s).*\((?:(?:\s|/\*[^*]*+\*/)*+select|\s*+/\*!\d*+\s*+select)(?![a-z0-9_]).*]],
+		[[(?s).*\((?:(?:\s|/\*[^*]*+\*+/)*+select|\s*+/\*!\d*+\s*+select)(?![a-z0-9_]).*]],
 	},
 	-- SQLi, schema probing and file access.
 	-- An inline comment counts as a space, as in INTO/**/OUTFILE or USER/**/().
 	{
 		"(?s).*",
-		[[(?s).*(?:information_schema|mysql\.user|pg_catalog|pg_shadow|sqlite_master|@@(?:version|datadir|hostname|basedir)|into(?:\s|/\*[^*]*+\*/)+(?:out|dump)file|(?<![a-z_])(?:version|database|user|current_user|schema)(?:\s|/\*[^*]*+\*/)*+\(\s*\)|dbms_pipe|utl_http|utl_inaddr).*]],
+		[[(?s).*(?:information_schema|mysql\.user|pg_catalog|pg_shadow|sqlite_master|@@(?:version|datadir|hostname|basedir)|into(?:\s|/\*[^*]*+\*+/)+(?:out|dump)file|(?<![a-z_])(?:version|database|user|current_user|schema)(?:\s|/\*[^*]*+\*+/)*+\(\s*\)|dbms_pipe|utl_http|utl_inaddr).*]],
+	},
+	-- SQLi, a stacked statement that changes data or schema after ";", such as 1; DROP TABLE user or 1; DELETE FROM eperson.
+	-- The statement needs its object, so "Section 1; drop-in tutoring hours" passes.
+	{
+		"(?s).*",
+		[[(?s).*;\s*(?:(?:drop|alter|truncate)(?:\s|/\*[^*]*+\*+/)++(?:table|database|schema|user|view|index)\b|delete(?:\s|/\*[^*]*+\*+/)++from(?:\s|/\*[^*]*+\*+/)++\w|insert(?:\s|/\*[^*]*+\*+/)++into(?:\s|/\*[^*]*+\*+/)++\w|update(?:\s|/\*[^*]*+\*+/)++\w+(?:\s|/\*[^*]*+\*+/)++set(?:\s|/\*[^*]*+\*+/)++\w).*]],
 	},
 	-- SQLi through sort parameters, a common WordPress plugin hole: only word characters, spaces, comma, dot, and dash pass.
 	-- The name is grouped because upstream wraps it as ^(?i)<name>$.
@@ -345,11 +355,11 @@ localized_global.WAF_Header_Request_table = {
 		"^(?:cookie|referer|user-agent)$",
 		[[(?i)(?:<|%3c)/?(?:script|iframe|svg|img|body|object|embed|style|link|meta|base|form|input|details|math|video|audio)(?![a-z0-9_-])|^(?>.*?(?:<|%3c)[a-z]).*?(?:[\s/"'\x60+]|%2[0f27])on[a-z]{3,}\s*(?:=|%3d)]],
 	},
-	-- SQLi through headers that apps store or log: UNION SELECT and time-based or error-based functions.
+	-- SQLi through headers that apps store or log, client address headers included: UNION SELECT, time-based or error-based functions, and a subquery.
 	-- An inline comment may sit before the parenthesis, as in SLEEP/**/(5), as in the query rule.
 	{
-		"^(?:cookie|referer|user-agent|x-forwarded-for)$",
-		[[(?i)^(?>.*?(?<![a-z_])union(?![a-z0-9_])).*(?<![a-z_])select(?![a-z0-9_])|(?<![a-z_])(?:sleep|pg_sleep|benchmark|extractvalue|updatexml)(?:\s|/\*[^*]*+\*/)*+\(]],
+		"^(?:cookie|referer|user-agent|x-forwarded-for|x-real-ip|client-ip)$",
+		[[(?i)^(?>.*?(?<![a-z_])union(?![a-z0-9_])).*(?<![a-z_])select(?![a-z0-9_])|(?<![a-z_])(?:sleep|pg_sleep(?:_for|_until)?|benchmark|extractvalue|updatexml)(?:\s|/\*[^*]*+\*+/)*+\(|\((?:\s|/\*[^*]*+\*+/)*+select(?![a-z0-9_])]],
 	},
 	{
 		"^x-forwarded-host$",
