@@ -199,6 +199,9 @@ The zone counts POSTs to these paths, at the site root or one directory below it
 - WordPress: `wp-login.php`
 - SLiMS: `index.php`, but not under `admin/` or `wp-admin/`
 - DSpace: `password-login`, `rest/login`, and `server/api/authn/login`
+- INLISLite: `site/login`, also up to two directories below the site root, and `index.php` under `backoffice/`, `backend/`, `keanggotaan/`, or `opac/`
+  Without pretty URLs, INLISLite sends every form of these modules to `index.php`, so the limit also counts admin form POSTs.
+- Other apps: `login` and `auth/login`
 
 A request above the limit gets `429` when the server sets `limit_req_status 429`, and `503` when it does not.
 Neither response counts toward a ban.
