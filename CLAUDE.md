@@ -68,7 +68,9 @@ Real nginx behaviour (Lua runtime, SELinux, systemd) is only observable on a tar
   The check runs in Bash as root because `httpd_t` may not read SELinux booleans, and `jit.off()` suffices because upstream's FFI use is pointer casts only, which need no executable memory.
 - `config/nginx-waf.conf` carries WAF directives only and turns the WAF on for every site with `access_by_lua_file` in the `http` block.
   `lua_package_path` and `load_module` belong to the main config (`load_lua_module`) or the distro's module setup, and a second copy fails `nginx -t` on duplicates.
-- `config/waf-ban.lua` runs as both `rewrite_by_lua_file` and `log_by_lua_file`, branched on `ngx.get_phase()`, because nginx allows one `rewrite_by_lua*` per context.
+- `config/waf-ban.lua` runs as `rewrite_by_lua_file`, `access_by_lua_file`, and `log_by_lua_file`, branched on `ngx.get_phase()`, because nginx allows one `*_by_lua*` per phase and context.
+  The access phase runs upstream's `/etc/nginx/lua/waf.lua` through a per-worker `loadfile` cached in `package.loaded.waf_ban_cache` and sets `ngx.ctx.waf_access_passed` when it returns, so the log phase ignores content-phase 403s (`autoindex off`) but still counts a `deny`, which runs before Lua access handlers.
+  It relies on upstream's default `exit_status = false`, which returns instead of calling `ngx.exit(ngx.OK)`; `tests/test-ban.lua` stubs upstream through that cache.
 - Upstream parses only the first 100 query arguments and headers (the `ngx.req` defaults), so the rewrite phase of `waf-ban.lua` answers 403, uncounted, when either comes back `truncated`.
 - Upstream matches `WAF_URI_Request_table` against the raw `request_uri`, which `%2e` defeats, so the rewrite phase of `waf-ban.lua` matches the same rules against the decoded, normalized `$uri` and its 403 counts toward a ban.
   A URI rule must therefore hold on both paths; `tests/test-ban.lua` stubs `ngx.re.find` with Lua patterns, so its rules use only syntax both share.

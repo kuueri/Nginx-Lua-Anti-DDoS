@@ -134,7 +134,7 @@ load_module $R/modules/ngx_http_lua_module.so;"
 	[ ! -e "$R/run/nginx.pid" ] || fail "nginx -t left an empty pid file behind"
 	[ "$(reloads)" -eq 1 ] || fail "install did not reload nginx once"
 	cmp -s "${SCRIPTS%/scripts}/config/waf-stats.lua" "$R/etc/nginx/lua/waf-stats.lua" || fail "install did not install waf-stats.lua"
-	grep -qx 'access_by_lua_file /etc/nginx/lua/waf.lua;' "$R/etc/nginx/conf.d/waf.conf" || fail "install did not turn the WAF on for every site"
+	grep -qx 'access_by_lua_file /etc/nginx/lua/waf-ban.lua;' "$R/etc/nginx/conf.d/waf.conf" || fail "install did not turn the WAF on for every site"
 
 	# Re-running install with no upstream change is a no-op and keeps the secret.
 	run "install-$platform.sh" || fail "install rerun exited non-zero: $(cat "$T/out.log")"

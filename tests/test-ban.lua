@@ -45,16 +45,25 @@ localized_global = {
 }
 local temps = {}
 
--- One request: rewrite phase, then the access-phase status (nil when the rewrite phase already exited), then the log phase.
-local function request(ip, opts)
+local EXIT = {}
+package.loaded["waf_ban_cache"] = {}
+
+local function run()
+	local ok, err = pcall(dofile, script)
+	if not ok and err ~= EXIT then
+		error(err, 0)
+	end
+end
+
+local function start(ip, opts)
 	opts = opts or {}
-	local ctx, exited, cleared, header = {}, nil, false, {}
+	local ctx, exited, cleared, header = {}, nil, {}, {}
 	local function env(phase, status)
 		_G.ngx = {
 			shared = { waf_strikes = dict },
 			var = {
 				remote_addr = ip,
-				realip_remote_addr = opts.realip or ip,
+				realip_remote_addr = not opts.realip_nil and (opts.realip or ip) or nil,
 				upstream_status = opts.upstream,
 				http_user_agent = opts.ua,
 				scheme = "https",
@@ -132,7 +141,7 @@ local function request(ip, opts)
 					end
 				end,
 				clear_header = function(h)
-					cleared = cleared or h == "X-Forwarded-For"
+					cleared[h] = true
 				end,
 				get_uri_args = function()
 					return opts.args or {}, opts.truncated == "args" and "truncated" or nil
@@ -150,17 +159,34 @@ local function request(ip, opts)
 			end,
 			exit = function(code)
 				exited = code
+				error(EXIT)
 			end,
 			log = function() end,
 		}
 	end
 	if not opts.site_return then
 		env("rewrite")
-		dofile(script)
+		run()
+		if not exited and not opts.site_deny then
+			package.loaded["waf_ban_cache"].upstream = function()
+				if opts.status == 403 and not opts.autoindex and not opts.upstream then
+					ngx.exit(403)
+				end
+			end
+			env("access")
+			run()
+		end
 	end
 	local status = exited or opts.status or 200
-	env("log", status)
-	dofile(script)
+	return status, function()
+		env("log", status)
+		run()
+	end, cleared, header
+end
+
+local function request(ip, opts)
+	local status, log, cleared, header = start(ip, opts)
+	log()
 	return status, cleared, header
 end
 
@@ -225,9 +251,57 @@ end
 check(request("172.32.0.1") == 403, "172.32.0.1 is public and must be banned")
 
 local _, cleared = request("203.0.113.20", { realip = "192.168.19.7" })
-check(cleared, "X-Forwarded-For must be cleared when realip replaced the address")
+check(cleared["X-Forwarded-For"], "X-Forwarded-For must be cleared when realip replaced the address")
 _, cleared = request("203.0.113.21")
-check(not cleared, "X-Forwarded-For must stay when realip did not replace the address")
+check(not cleared["X-Forwarded-For"], "X-Forwarded-For must stay when realip did not replace the address")
+_, cleared = request("203.0.113.22", { realip = "172.68.10.1" })
+check(
+	cleared["X-Forwarded-For"] and cleared["CF-Connecting-IP"],
+	"X-Forwarded-For and CF-Connecting-IP must be cleared when realip replaced the address"
+)
+_, cleared = request("203.0.113.23", { realip_nil = true })
+check(next(cleared) == nil, "no proxy header may be cleared without the realip module")
+_, cleared = request("192.168.19.7", { realip = "192.168.19.7" })
+check(
+	cleared["CF-Connecting-IP"] and not cleared["X-Forwarded-For"],
+	"a private proxy address must lose CF-Connecting-IP and keep X-Forwarded-For"
+)
+
+local listing = "203.0.113.24"
+for _ = 1, 10 do
+	request(listing, { status = 403, autoindex = true })
+end
+check(request(listing) == 200, "a content-phase 403 after upstream passed, such as autoindex off, must not count")
+local trap = "203.0.113.25"
+for _ = 1, 5 do
+	request(trap, { status = 403, site_deny = true })
+end
+check(request(trap) == 403, "an access-phase deny before upstream must count toward a ban")
+
+local burst = "203.0.113.26"
+local logs = {}
+for i = 1, 10 do
+	local _, log = start(burst, { status = 403 })
+	logs[i] = log
+end
+for _, log in ipairs(logs) do
+	log()
+end
+check(store["bans:" .. burst].v == 1, "one HTTP/2 burst of 10 hits must ban once, not twice")
+check(store["bans:" .. burst].exp ~= nil, "the ban history must expire")
+local above = "203.0.113.27"
+store["hit:" .. above] = { v = 7, exp = now + 600 }
+request(above, { status = 403 })
+check(request(above) == 403, "a hit count already above the limit must still ban")
+local repeat_ip = "203.0.113.28"
+store["bans:" .. repeat_ip] = { v = 20, exp = now + 2592000 }
+for _ = 1, 5 do
+	request(repeat_ip, { status = 403 })
+end
+now = now + 512 * 3600 - 1
+check(request(repeat_ip) == 403, "a repeat ban must last up to its 512-hour cap")
+now = now + 2
+check(request(repeat_ip) == 200, "a repeat ban must end after its 512-hour cap")
 
 -- Crawlers, AI agents, and Turnitin are not banned for a few payload hits, e.g. links planted with SQLi; the 403 itself stays.
 -- 50 payload hits within 10 minutes ban them, because anyone can send a crawler User-Agent; a generic HTTP client is banned at 5.

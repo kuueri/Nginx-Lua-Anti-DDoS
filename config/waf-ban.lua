@@ -7,6 +7,7 @@ local AI_LIMIT = 10
 local AI_WINDOW = 60
 local BODY_LIMIT = 131072
 local BODY_FIELDS = 1000
+local BAN_HISTORY_TTL = 2592000
 local AI_AGENTS = {
 	"gptbot",
 	"chatgpt-user",
@@ -34,6 +35,39 @@ local CRAWLERS = { "bot", "crawl", "spider", "slurp", "turnitin", "facebookexter
 local strikes = ngx.shared.waf_strikes
 local ip = ngx.var.remote_addr
 local ua = (ngx.var.http_user_agent or ""):lower()
+local cache = package.loaded["waf_ban_cache"] or {}
+package.loaded["waf_ban_cache"] = cache
+
+if ngx.get_phase() == "access" then
+	cache.upstream = cache.upstream or assert(loadfile("/etc/nginx/lua/waf.lua"))
+	cache.upstream()
+	ngx.ctx.waf_access_passed = true
+	return
+end
+
+local function is_private(addr)
+	return addr:find("^127%.")
+		or addr:find("^10%.")
+		or addr:find("^192%.168%.")
+		or addr:find("^172%.1[6-9]%.")
+		or addr:find("^172%.2%d%.")
+		or addr:find("^172%.3[01]%.")
+		or addr == "::1"
+		or addr:find("^f[cd]")
+end
+
+local function compiled(name, prefix, suffix)
+	local rules = localized_global[name]
+	if cache[name] ~= rules then
+		local out = {}
+		for i, rule in ipairs(rules) do
+			local key = rule[1]:gsub("[%^%$]", "")
+			out[i] = { key == ".*" or key == "(?s).*", "^(?i)" .. key .. "$", prefix .. rule[2] .. suffix }
+		end
+		cache[name], cache[name .. " compiled"] = rules, out
+	end
+	return cache[name .. " compiled"]
+end
 
 local function find(list)
 	for _, name in ipairs(list) do
@@ -281,12 +315,10 @@ local function multipart_fields(read, boundary)
 end
 
 local function rule_hit(fields)
-	for i, rule in ipairs(localized_global.WAF_query_string_Request_table) do
-		local key = "^(?i)" .. rule[1]:gsub("[%^%$]", "") .. "$"
-		local val = "^(?i)" .. rule[2] .. "$"
+	for i, rule in ipairs(compiled("WAF_query_string_Request_table", "^(?i)", "$")) do
 		for _, field in ipairs(fields) do
-			if ngx.re.find(field[1], key, "jos") then
-				local from, _, err = ngx.re.find(field[2], val, "jo")
+			if rule[1] or ngx.re.find(field[1], rule[2], "jos") then
+				local from, _, err = ngx.re.find(field[2], rule[3], "jo")
 				if from or err then
 					local name = field[1]:sub(1, 64):gsub("%c", "?")
 					return name .. ", WAF_query_string_Request_table rule " .. i .. (err and ", " .. err or "")
@@ -438,8 +470,12 @@ local function body_hit(uri)
 end
 
 if ngx.get_phase() == "rewrite" then
-	if ngx.var.realip_remote_addr ~= ip then
+	local realip = ngx.var.realip_remote_addr
+	if realip and realip ~= ip then
 		ngx.req.clear_header("X-Forwarded-For")
+		ngx.req.clear_header("CF-Connecting-IP")
+	elseif is_private(ip) then
+		ngx.req.clear_header("CF-Connecting-IP")
 	end
 	if strikes:get("ban:" .. ip) then
 		return ngx.exit(ngx.HTTP_FORBIDDEN)
@@ -452,10 +488,13 @@ if ngx.get_phase() == "rewrite" then
 	ngx.ctx.waf_ban_checked = true
 	local uri = ngx.var.uri
 	local url = ngx.var.scheme .. "://" .. ngx.var.host .. ngx.var.request_uri
-	for i, rule in ipairs(localized_global.WAF_URI_Request_table) do
-		local hit, _, err = ngx.re.find(url, "^(?i)" .. rule[1]:gsub("[%^%$]", "") .. "$", "jo")
+	for i, rule in ipairs(compiled("WAF_URI_Request_table", "(?i)", "")) do
+		local hit, _, err = rule[1]
+		if not hit then
+			hit, _, err = ngx.re.find(url, rule[2], "jo")
+		end
 		if hit or err then
-			hit, _, err = ngx.re.find(uri, "(?i)" .. rule[2], "jo")
+			hit, _, err = ngx.re.find(uri, rule[3], "jo")
 		end
 		if hit or err then
 			ngx.log(
@@ -505,27 +544,22 @@ if ngx.get_phase() == "rewrite" then
 	return
 end
 
-if not ngx.ctx.waf_ban_checked or ngx.status ~= ngx.HTTP_FORBIDDEN or ngx.var.upstream_status then
-	return
-end
 if
-	ip:find("^127%.")
-	or ip:find("^10%.")
-	or ip:find("^192%.168%.")
-	or ip:find("^172%.1[6-9]%.")
-	or ip:find("^172%.2%d%.")
-	or ip:find("^172%.3[01]%.")
-	or ip == "::1"
-	or ip:find("^f[cd]")
+	not ngx.ctx.waf_ban_checked
+	or ngx.ctx.waf_access_passed
+	or ngx.status ~= ngx.HTTP_FORBIDDEN
+	or ngx.var.upstream_status
+	or is_private(ip)
+	or strikes:get("ban:" .. ip)
 then
 	return
 end
 local crawler = find(AI_AGENTS) or find(CRAWLERS)
 local key = (crawler and "crawl:" or "hit:") .. ip
 local hits = strikes:incr(key, 1, 0, crawler and CRAWLER_WINDOW or WINDOW)
-if hits == (crawler and CRAWLER_LIMIT or LIMIT) then
-	local n = strikes:incr("bans:" .. ip, 1, 0) or 1
-	local ban = BAN * 2 ^ (n - 1)
+if hits and hits >= (crawler and CRAWLER_LIMIT or LIMIT) then
+	local n = strikes:incr("bans:" .. ip, 1, 0, BAN_HISTORY_TTL) or 1
+	local ban = BAN * 2 ^ (math.min(n, 10) - 1)
 	strikes:set("ban:" .. ip, true, ban)
 	strikes:delete("hit:" .. ip)
 	strikes:delete("crawl:" .. ip)

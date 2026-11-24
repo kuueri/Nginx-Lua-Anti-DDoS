@@ -137,10 +137,11 @@ If the script cannot install the dnf plugin, it shows a warning. Then you must r
 
 ### All sites
 
-The installed `waf.conf` contains `access_by_lua_file /etc/nginx/lua/waf.lua;` in the `http` block.
+The installed `waf.conf` contains `access_by_lua_file /etc/nginx/lua/waf-ban.lua;` in the `http` block. `waf-ban.lua` runs the upstream WAF, `/etc/nginx/lua/waf.lua`.
 Thus the WAF is active on all sites and paths immediately after the install. You do not edit the site configs.
 
-To turn off the WAF for one `location`, add `access_by_lua_block { return }` to it. This handler replaces the handler from the `http` block.
+To turn off the WAF for one `location`, add `rewrite_by_lua_block { return }` and `access_by_lua_block { return }` to it.
+These handlers replace the handlers from the `http` block. With only the access handler, the `waf-ban.lua` checks of the rewrite phase still run.
 
 ### WAF rules
 
@@ -225,9 +226,13 @@ The WAF rules apply to all requests. A request that matches a rule gets `403`, b
 - It counts the `403` responses from the WAF for each client address. The WAF sends `403` only for a request with an attack payload, because the User-Agent blacklist is empty.
 - After 5 of them in 10 minutes, it bans the address for 1 hour.
 - Each later ban of the same address is two times longer than the ban before it.
-  So the next bans last 2 hours, 4 hours, 8 hours, and so on, with no maximum.
+  So the next bans last 2 hours, 4 hours, 8 hours, and so on, up to 512 hours (the tenth ban and all later bans).
   The ban count is in the `waf_strikes` shared dict, so a reload keeps it and only an nginx restart clears it.
+  The ban count expires 30 days after the first ban of the address.
+- It does not count a `403` that ends while the address is already banned, so one burst of parallel HTTP/2 requests bans only once.
 - It does not count a `403` from the application, for example DSpace, or from a `return 403` in the site config.
+- It does not count a `403` that nginx sends after the WAF let the request through, for example for a directory without an index file and with `autoindex off`.
+  It counts a `403` from a `deny` rule in the site config, because `deny` runs before the WAF. So a `deny all` trap for scanner paths still leads to a ban.
 - It never bans private or loopback addresses, so it cannot ban a reverse proxy.
 - It bans crawlers, AI agents, and Turnitin only after 50 of them in 10 minutes. These are User-Agents that contain `bot`, `crawl`, `spider`, `slurp`, `turnitin`, or `facebookexternalhit`, and the AI agent families.
   A crawler can follow a link with an attack payload that an attacker put on another site. The WAF rejects that request with `403`, and a few such links do not ban the crawler.
@@ -318,9 +323,12 @@ That table replaces the default list.
 Without it, all visitors share the address of the proxy and its rate limits.
 
 If nginx uses `set_real_ip_from` and `real_ip_header X-Forwarded-For`, nginx already replaces the proxy address with the client address.
-Upstream then sees a public address together with `X-Forwarded-For`. Upstream calls this proxy impersonation and bans the visitor for 24 hours.
-To prevent this, `waf-ban.lua` removes `X-Forwarded-For` from requests where the realip module changed the address.
-Upstream then uses the client address from nginx. A request from an address that `set_real_ip_from` does not list keeps its header.
+Upstream then sees a public address together with `X-Forwarded-For`, or with a `CF-Connecting-IP` that the proxy passed on. Upstream calls this proxy impersonation and bans the visitor for 24 hours.
+To prevent this, `waf-ban.lua` removes `X-Forwarded-For` and `CF-Connecting-IP` from requests where the realip module changed the address.
+Upstream then uses the client address from nginx. A request from a public address that `set_real_ip_from` does not list keeps its headers.
+A request from a private address that `set_real_ip_from` does not list, for example a SafeLine proxy, loses only `CF-Connecting-IP`.
+Upstream trusts private addresses, and only Cloudflare sets this header, so behind another proxy the client could choose its own address.
+Without the realip module, `waf-ban.lua` removes no header.
 
 ## Local rules
 
