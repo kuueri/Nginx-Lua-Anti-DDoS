@@ -715,34 +715,65 @@ assert(
 local table_after = g.anti_ddos_table()
 for _, site in ipairs(table_after) do
 	local after = banned_methods(site)
-	assert(after.OPTIONS == nil, "anti_ddos_table override left OPTIONS in the prohibited methods")
 	assert(
-		after.PUT and after.PATCH and after.DELETE,
-		"anti_ddos_table override must keep the PUT, PATCH, and DELETE bans"
+		after.OPTIONS == nil and after.PUT == nil and after.PATCH == nil and after.DELETE == nil,
+		"anti_ddos_table override must let OPTIONS, PUT, PATCH, and DELETE reach the application"
 	)
+	assert(after.CONNECT and after.TRACE, "anti_ddos_table override must keep the CONNECT and TRACE bans")
+	assert(site[5] == 0 and site[12] == 0, "anti_ddos_table override must leave body size limits to nginx")
 end
-local oai, default = table_after[1], table_after[#table_after]
-assert(
-	oai[23] == 1 and oai[24] == math.huge,
-	"OAI entry must disable the automatic JS challenge without enabling master_switch"
-)
-assert(oai[40] == store.anti_ddos_table[1][40], "OAI entry must copy fields past the nil hole at field 32")
+local default = table_after[#table_after]
+assert(#table_after > 1, "anti_ddos_table override must prepend challenge exemptions")
+for i = 1, #table_after - 1 do
+	local entry = table_after[i]
+	assert(
+		entry[23] == 1 and entry[24] == math.huge,
+		"exempt entry must disable the automatic JS challenge without enabling master_switch"
+	)
+	assert(entry[40] == store.anti_ddos_table[1][40], "exempt entry must copy fields past the nil hole at field 32")
+end
 assert(
 	default[1] == ".*" and default[23] == 1 and default[24] == 100,
 	"catch-all entry must keep the default automatic JS challenge"
 )
+local function exempted(url)
+	for _, entry in ipairs(table_after) do
+		if entry == default then
+			return false
+		end
+		if url:find(entry[1]) then
+			return entry[24] == math.huge
+		end
+	end
+	return false
+end
 for _, url in ipairs({
 	"https://repository.unisma.ac.id/oai/request?metadataPrefix=oai_dc&verb=ListRecords",
 	"https://repository.unisma.ac.id/oai?verb=Identify",
+	"https://repository.unisma.ac.id/server/oai/request?verb=Identify",
+	"https://inlislite.example.go.id/opac/oai?verb=Identify",
+	"https://inlislite.example.go.id/inlislite3/opac/oai?verb=Identify",
+	"https://lib.example.ac.id/index.php?p=oai&verb=ListRecords",
+	"https://lib.example.ac.id/slims/index.php?verb=Identify&p=oai",
+	"https://repository.unisma.ac.id/server/api/core/items",
+	"https://repository.unisma.ac.id/swordv2/servicedocument",
+	"https://repository.unisma.ac.id/rest/items",
+	"https://blog.example.com/wp-json/wp/v2/posts",
+	"https://blog.example.com/news/wp-json/wp/v2/posts",
+	"https://app.example.com/api/v1/users",
 }) do
-	assert(url:find(oai[1]), "OAI entry must match " .. url)
+	assert(exempted(url), "challenge exemption must match " .. url)
 end
 for _, url in ipairs({
+	"https://example.com/wp-login.php?x=://a/oai/",
+	"https://example.com/index.php?p=login&_=://x/oai?",
+	"https://example.com/index.php?p=oai_fake",
 	"https://repository.unisma.ac.id/?x=/oai/",
 	"https://repository.unisma.ac.id/oai-guide/",
 	"https://repository.unisma.ac.id/handle/123456789/1",
+	"https://example.com/api-docs/",
 }) do
-	assert(not url:find(oai[1]), "OAI entry must not match " .. url)
+	assert(not exempted(url), "challenge exemption must not match " .. url)
 end
 
 assert(

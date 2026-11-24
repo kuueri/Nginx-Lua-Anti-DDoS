@@ -231,12 +231,14 @@ Upstream bans an address for 24 hours for these causes:
 
 - More than 10,000 requests in 500 ms.
 - More than 1,000 failed JavaScript challenges in 1 second.
-- A request method that upstream prohibits: `PATCH`, `PUT`, `DELETE`, `CONNECT`, or `TRACE`.
+- A request method that upstream prohibits: `CONNECT` or `TRACE`.
 - A forged `X-Forwarded-For` or `CF-Connecting-IP` header.
 
-Upstream also prohibits `OPTIONS`, but `config/waf-local-overrides.lua` removes it from that list.
-Microsoft Office and some browsers send `OPTIONS` before they open a document link, so these readers got a 24-hour ban.
-`OPTIONS` requests now go to the application.
+Upstream also prohibits `OPTIONS`, `PUT`, `PATCH`, and `DELETE`, but `config/waf-local-overrides.lua` removes them from that list.
+REST clients, for example the DSpace REST API, SWORDv2, and the WordPress REST API, send these methods, and Microsoft Office sends `OPTIONS` before it opens a document link.
+These requests now go to the application.
+Upstream also rejects a request of 1 MB or more and a small body sent with `Expect: 100-continue`.
+`config/waf-local-overrides.lua` turns off both checks, so the `client_max_body_size` of nginx sets the body size limit.
 
 Upstream and `waf-ban.lua` keep their bans in nginx shared memory. A reload keeps the bans. Only a restart of nginx removes them.
 
@@ -273,8 +275,12 @@ The JavaScript challenge is automatic. Upstream turns on the challenge for all p
 When upstream bans fewer than 100 addresses, no request gets the challenge.
 
 API clients and OAI-PMH harvesters are not browsers. They cannot solve the JavaScript challenge.
-`/oai/` paths skip the automatic JavaScript challenge in `config/waf-local-overrides.lua` while keeping all WAF rules and flood protection active.
-Other API paths still get the challenge during an attack.
+These paths skip the automatic JavaScript challenge in `config/waf-local-overrides.lua`, while all WAF rules and flood protection stay active:
+
+- OAI-PMH: `/oai`, `/server/oai`, `/opac/oai` (also one directory below the site root), and SLiMS `index.php?p=oai`
+- REST APIs: `/server/api/`, `/swordv2/`, `/rest/`, `/wp-json/`, and `/api/` (the last two also one directory below the site root)
+
+The patterns start at the host name, so a query value such as `?x=/oai/` does not skip the challenge.
 Only the User-Agent whitelist skips the challenge on other paths, for Googlebot, Bingbot, and Turnitin.
 
 ### User-Agent lists

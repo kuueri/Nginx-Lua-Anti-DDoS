@@ -410,29 +410,52 @@ localized_global.WAF_cookie_block = false
 localized_global.WAF_cookie_skip = { "^sl%-session$" }
 
 -- Upstream's default anti_ddos_table closes the connection and bans the address for 24 hours on PATCH, PUT, DELETE, CONNECT, OPTIONS, or TRACE.
--- Readers send OPTIONS too: Microsoft Office and some browsers ask with OPTIONS before they open a bitstream link, so OPTIONS leaves that list and reaches the application again.
--- PUT, PATCH, and DELETE stay banned, because only vulnerability scanners sent them in the DSpace access logs.
--- Upstream also turns on the JavaScript challenge for all paths once 100 addresses are banned (field 24), which breaks non-browser OAI-PMH harvesters with a 200 HTML page.
--- Prepending a copy of the default entry for /oai/ with field 24 set to math.huge keeps the challenge off there (field 23 must stay 1, or upstream's default master_switch = 1 leaves the challenge always on) while keeping all WAF rules and flood checks active.
+-- REST clients (DSpace's Angular UI and REST API, SWORDv2, the WordPress REST API) send PUT, PATCH, and DELETE, and Microsoft Office sends OPTIONS before it opens a bitstream link, so only CONNECT and TRACE stay banned.
+-- Field 5 bans a request of 1 MB or more and field 12 a small body announced with Expect: 100-continue, which REST and SWORD deposits send, so both are 0 and nginx's client_max_body_size governs body size.
+-- Upstream also turns on the JavaScript challenge for all paths once 100 addresses are banned (field 24), which breaks non-browser OAI-PMH harvesters and API clients with a 200 HTML page.
+-- Prepending a copy of the default entry with field 24 set to math.huge keeps the challenge off on the paths below (field 23 must stay 1, or upstream's default master_switch = 1 leaves the challenge always on) while keeping all WAF rules and flood checks active.
+-- Upstream matches each Lua pattern with string.find against scheme://host/request_uri, so every pattern is anchored at the host, and SLiMS's p=oai must be a whole query argument, which a value such as ?x=://a/oai/ is not.
 -- pairs() copies every field across the nil hole at field 32; upstream calls this function once per worker after it builds its default table.
 localized_global.anti_ddos_table = function()
 	local t = package.loaded["anti_ddos_config_store"].anti_ddos_table
+	local allowed = { OPTIONS = true, PUT = true, PATCH = true, DELETE = true }
 	for _, site in ipairs(t) do
 		for i = #site[26], 1, -1 do
-			if site[26][i][1] == "OPTIONS" then
+			if allowed[site[26][i][1]] then
 				table.remove(site[26], i)
 			end
 		end
+		site[5] = 0
+		site[12] = 0
 	end
-	local oai = {}
-	for k, v in pairs(t[1]) do
-		oai[k] = v
+	local out = {}
+	for _, pattern in ipairs({
+		"^https?://[^/]+/oai[/?]",
+		"^https?://[^/]+/server/oai[/?]",
+		"^https?://[^/]+/opac/oai",
+		"^https?://[^/]+/[^/?]+/opac/oai",
+		"^https?://[^?]+%?p=oai$",
+		"^https?://[^?]+%?p=oai&",
+		"^https?://[^?]+%?.-&p=oai$",
+		"^https?://[^?]+%?.-&p=oai&",
+		"^https?://[^/]+/server/api/",
+		"^https?://[^/]+/swordv2/",
+		"^https?://[^/]+/rest/",
+		"^https?://[^/]+/wp%-json/",
+		"^https?://[^/]+/[^/?]+/wp%-json/",
+		"^https?://[^/]+/api/",
+		"^https?://[^/]+/[^/?]+/api/",
+	}) do
+		local entry = {}
+		for k, v in pairs(t[1]) do
+			entry[k] = v
+		end
+		entry[1] = pattern
+		entry[24] = math.huge
+		out[#out + 1] = entry
 	end
-	oai[1] = "://[^/]+/oai[/?]"
-	oai[24] = math.huge
-	local out = { oai }
 	for i = 1, #t do
-		out[i + 1] = t[i]
+		out[#out + 1] = t[i]
 	end
 	return out
 end
