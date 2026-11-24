@@ -476,7 +476,71 @@ check(
 	body({ ctype = "multipart/form-data; boundary=Other", body = part(field_q, "union") }) == 403,
 	"a multipart body whose boundary matches no part must be checked whole"
 )
-check(body({ ctype = mp, body = over }) == 200, "a multipart body over 128 KB is an upload and must pass unchecked")
+check(body({ ctype = mp, body = over }) == 413, "a multipart body over 128 KB without any part must get 413")
+local clean_q = part(field_q, "x") .. "--XyZ--\r\n"
+check(
+	body({ ctype = 'multipart/form-data; x="boundary=FAKE"; boundary=XyZ', body = clean_q }) == 403,
+	"a boundary that PHP and Tomcat read differently (quoted parameter) must get 403"
+)
+check(
+	body({ ctype = "multipart/form-data; x_boundary=FAKE; boundary=XyZ", body = clean_q }) == 403,
+	"a boundary that PHP and Tomcat read differently (prefixed parameter) must get 403"
+)
+check(
+	body({ ctype = "multipart/form-data; boundary=XyZ; boundary=b", body = clean_q }) == 403,
+	"two boundary parameters must get 403"
+)
+check(body({
+	ctype = "multipart/form-data; boundary=XyZ ",
+	body = part('Content-Disposition: form-data; name="order"', "title;drop") .. "--XyZ--\r\n",
+}) == 403, "a boundary with trailing spaces must still be parsed and checked")
+check(
+	body({ ctype = mp .. "; charset=UTF-8", body = clean_q }) == 200,
+	"a clean multipart body with more parameters must pass"
+)
+for _, head in ipairs({
+	field_q .. '; x="; filename=a"',
+	field_q .. "; x='; filename=a'",
+	field_q .. '; x="\\"; filename=a"',
+}) do
+	check(
+		body({ ctype = mp, body = part(head, "union") .. "--XyZ--\r\n" }) == 403,
+		"a quoted filename= is no file parameter: " .. head
+	)
+end
+check(body({
+	ctype = mp,
+	body = part('Content-Disposition: form-data; name="f"; filename="a.pdf"\r\n' .. field_q, "union") .. "--XyZ--\r\n",
+}) == 403, "two Content-Disposition headers in one part must get 403")
+local pdf = part(
+	'Content-Disposition: form-data; name="f"; filename="thesis.pdf"\r\nContent-Type: application/pdf',
+	("union "):rep(35000)
+)
+for _, file in ipairs({ false, true }) do
+	local mode = file and "a temp file" or "memory"
+	check(
+		body({ ctype = mp, body = pdf .. part(field_q, "hello") .. "--XyZ--\r\n", file = file, chunked = file }) == 200,
+		"a 200 KB upload with a clean field in " .. mode .. " must pass"
+	)
+	check(body({
+		ctype = mp,
+		body = part('Content-Disposition: form-data; name="f"; filename="a.pdf"', ("x"):rep(153600))
+			.. part(field_q, "1 union select 2")
+			.. "--XyZ--\r\n",
+		file = file,
+	}) == 403, "a payload after a 150 KB upload in " .. mode .. " must get 403")
+	check(body({
+		ctype = mp,
+		body = part(field_q, "1 union select 2")
+			.. part('Content-Disposition: form-data; name="f"; filename="a.pdf"', ("x"):rep(153600))
+			.. "--XyZ--\r\n",
+		file = file,
+	}) == 403, "a payload before a 150 KB upload in " .. mode .. " must get 403")
+end
+check(
+	body({ ctype = mp, body = part('Content-Disposition: form-data; name="pad"', over) .. "--XyZ--\r\n" }) == 413,
+	"a non-file field over 128 KB must get 413"
+)
 check(
 	body({ ctype = form, body = "q=union", uri = "/wp-admin/post.php" }) == 200,
 	"a body on a skipped path must not be checked"

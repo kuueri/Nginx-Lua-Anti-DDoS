@@ -180,7 +180,10 @@ Upstream checks only the query values.
 A urlencoded or multipart body with more than 1000 fields gets `413`.
 A urlencoded, JSON, or XML body larger than 128 KB also gets `413`.
 A `text/plain` body larger than 128 KB is not checked.
-A multipart body larger than 128 KB is an upload, and `waf-ban.lua` does not check it.
+A multipart body can be larger than 128 KB, because uploaded files do not count.
+`waf-ban.lua` reads it in 1 MB steps, skips the file parts, and still checks all other fields, up to 128 KB of field text together; more field text gets `413`.
+A multipart part counts as a file only when its `Content-Disposition` has a `filename` parameter outside a quoted value, as PHP reads it.
+A `boundary` that PHP and Tomcat read differently, or a part with two `Content-Disposition` headers, gets `403`.
 
 With `WAF_body_block = false`, a body hit only writes a `Would block (log only)` line to the error log.
 Set `WAF_body_block` to `true` after one week without false positives.

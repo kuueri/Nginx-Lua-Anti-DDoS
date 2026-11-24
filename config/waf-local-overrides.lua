@@ -433,7 +433,8 @@ localized_global.WAF_POST_Request_table = {}
 -- JSON that does not parse, nests deeper than 100 levels, or holds more than 1000 keys and values is checked as one text after its escapes are decoded.
 -- An xml or +xml body gets one XML rule in waf-ban.lua instead, because Atom and SOAP tags such as <link> and attributes such as online= match the query XSS rules; a text/plain or untyped body is checked as JSON or XML when it starts with {, [, or <.
 -- It reads up to 128 KB, where every query rule stays clear of the PCRE match limit even without PCRE JIT; 1 MB values hit that limit.
--- A larger urlencoded, JSON, or XML body, or a urlencoded or multipart body with more than 1000 fields, gets 413, which never counts toward a ban; a larger multipart body is an upload and a larger text/plain body stays unchecked.
+-- A larger urlencoded, JSON, or XML body, or a urlencoded or multipart body with more than 1000 fields, gets 413, which never counts toward a ban; a larger text/plain body stays unchecked.
+-- A larger multipart body is an upload: its file parts are skipped and its other fields are still checked, up to 128 KB of field text, or 413.
 -- false only logs "Would block (log only) Request body prohibited" for 7 days of tuning; true answers a hit with 403, which counts toward a ban.
 localized_global.WAF_body_block = false
 -- Lua patterns for $uri, the decoded path, whose bodies stay unchecked, because editors save posts there and HTML or SQL words are normal content.

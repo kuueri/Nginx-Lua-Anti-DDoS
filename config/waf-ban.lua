@@ -136,30 +136,148 @@ local function json_fields(body)
 	end
 end
 
-local function multipart_fields(body, ctype)
+local function trim(s)
+	return s and s:match("^[ \t]*(.-)[ \t]*$")
+end
+
+local function extract_boundary(ctype)
 	local at = ctype:find("boundary", 1, true) or ctype:lower():find("boundary", 1, true)
 	local value = at and ctype:sub(at):match("=(.*)")
-	local boundary = value and (value:match('^"([^"]*)"') or value:match("^[^,;]*"))
-	if not boundary or boundary == "" then
-		return nil
-	end
-	local fields, parts = {}, 0
-	local delim = "\n--" .. boundary
-	body = "\n" .. body
-	local _, stop = body:find(delim, 1, true)
-	while stop and body:sub(stop + 1, stop + 2) ~= "--" do
-		parts = parts + 1
-		local next_at, next_stop = body:find(delim, stop + 1, true)
-		local rest = body:sub(stop + 1, (next_at or #body + 1) - 1):match("^[^\n]*\n(.*)$") or ""
-		local head, content = ("\n" .. rest):match("^(.-)\n\r?\n(.*)$")
-		local cd = (head or ""):lower():match("\ncontent%-disposition:([^\n]*)") or ""
-		if not cd:find(";[ \t]*filename=") then
-			local name = cd:match(';[ \t]*name="([^"]*)"') or cd:match(";[ \t]*name=([^;\r]*)") or ""
-			fields[#fields + 1] = { name, content or rest }
+	local php = value and (value:sub(1, 1) == '"' and value:match('^"([^"]*)"') or value:match("^[^,;]*"))
+	local rfc, count, pos = nil, 0, (ctype:find(";", 1, true) or #ctype) + 1
+	while pos <= #ctype do
+		local name, stop = ctype:match("^%s*([^=;]*)()", pos)
+		local param
+		pos = stop
+		if ctype:sub(pos, pos) == "=" then
+			local q = ctype:match('^%s*()"', pos + 1)
+			if q then
+				local e = q + 1
+				while e <= #ctype and ctype:sub(e, e) ~= '"' do
+					e = e + (ctype:sub(e, e) == "\\" and 2 or 1)
+				end
+				param = ctype:sub(q + 1, e - 1):gsub("\\(.)", "%1")
+				pos = e + 1
+			else
+				param = ctype:match("^[^;]*", pos + 1)
+				pos = pos + 1 + #param
+			end
 		end
-		stop = next_stop
+		pos = (ctype:find(";", pos, true) or #ctype) + 1
+		if trim(name):lower() == "boundary" then
+			count = count + 1
+			rfc = param
+		end
 	end
-	return parts > 0 and fields or nil
+	if count > 1 then
+		return nil, "multiple boundaries"
+	end
+	php, rfc = trim(php), trim(rfc)
+	if not php or php == "" or php ~= rfc then
+		return nil, "ambiguous boundary"
+	end
+	return php
+end
+
+local function part_disposition(head)
+	local lower = head:lower()
+	local _, n = lower:gsub("\ncontent%-disposition:", "")
+	if n > 1 then
+		return nil, "duplicate content-disposition"
+	end
+	local cd = lower:match("\ncontent%-disposition:([^\n]*)") or ""
+	local plain, bare, at = cd:gsub("\\.", ""), {}, 1
+	while true do
+		local q = plain:find("[\"']", at)
+		bare[#bare + 1] = plain:sub(at, (q or 0) - 1)
+		local close = q and plain:find(plain:sub(q, q), q + 1, true)
+		if not close then
+			break
+		end
+		at = close + 1
+	end
+	local name = cd:match(';[ \t]*name="([^"]*)"') or cd:match(";[ \t]*name=([^;\r]*)") or ""
+	return table.concat(bare):find(";[ \t]*filename%*?=") ~= nil, name
+end
+
+local function multipart_fields(read, boundary)
+	local delim = "\n--" .. boundary
+	local buf, pos, eof = "", 1, false
+	local fields, parts, text = {}, 0, 0
+	local function more()
+		local chunk = not eof and read()
+		if not chunk then
+			eof = true
+			return false
+		end
+		buf = pos > #buf and chunk or buf:sub(pos) .. chunk
+		pos = 1
+		return true
+	end
+	local function upto(keep)
+		local out, size = {}, 0
+		while true do
+			local a, b = buf:find(delim, pos, true)
+			local stop = a and a - 1 or eof and #buf or math.max(pos - 1, #buf - #delim)
+			if keep then
+				size = size + stop - pos + 1
+				if text + size > BODY_LIMIT then
+					return nil, nil, true
+				end
+				out[#out + 1] = buf:sub(pos, stop)
+			end
+			pos = a and b + 1 or stop + 1
+			if a or eof then
+				text = text + size
+				return a ~= nil, table.concat(out)
+			end
+			more()
+		end
+	end
+	while #buf < #delim and more() do
+	end
+	local found
+	if buf:sub(1, #delim - 1) == delim:sub(2) then
+		found, pos = true, #delim
+	else
+		found = upto(false)
+	end
+	while found do
+		while #buf - pos < 1 and more() do
+		end
+		if buf:sub(pos, pos + 1) == "--" then
+			break
+		end
+		parts = parts + 1
+		local le, hs, he
+		repeat
+			le = buf:find("\n", pos, true)
+			hs, he = nil, nil
+			if le then
+				hs, he = buf:find("\n\r?\n", le)
+			end
+		until hs or #buf - pos > 65536 or not more()
+		if not hs or hs - pos > 65536 or (buf:find(delim, pos, true) or hs) < hs then
+			return nil, 413, "multipart part without a header end"
+		end
+		local is_file, name = part_disposition(buf:sub(le, hs - 1))
+		if is_file == nil then
+			return nil, ngx.HTTP_FORBIDDEN, name
+		end
+		pos = he + 1
+		local content, over
+		found, content, over = upto(not is_file)
+		if over then
+			return nil, 413, "over " .. BODY_LIMIT .. " bytes of multipart fields"
+		end
+		if not is_file then
+			fields[#fields + 1] = { name, content }
+			if #fields > BODY_FIELDS then
+				return nil, 413, "over " .. BODY_FIELDS .. " fields"
+			end
+		end
+	end
+	return fields, parts
 end
 
 local function rule_hit(fields)
@@ -234,63 +352,88 @@ local function body_hit(uri)
 			return
 		end
 	end
+	local over = kind ~= "text" and 413 or nil
 	local length = tonumber(ngx.var.content_length)
-	if not length or length <= BODY_LIMIT then
-		ngx.req.read_body()
-		local body = ngx.req.get_body_data()
-		local file = not body and ngx.req.get_body_file()
-		if file then
-			local f = assert(io.open(file, "rb"))
-			body = f:read(BODY_LIMIT + 1)
+	if kind ~= "multipart" and length and length > BODY_LIMIT then
+		return over, "over " .. BODY_LIMIT .. " bytes"
+	end
+	ngx.req.read_body()
+	local body = ngx.req.get_body_data()
+	local path = not body and ngx.req.get_body_file()
+	local f = path and assert(io.open(path, "rb"))
+	if f then
+		body = f:read(BODY_LIMIT + 1)
+	end
+	if not body then
+		if f then
 			f:close()
 		end
-		if not body then
-			return
+		return
+	end
+	local fields
+	if kind == "multipart" then
+		local boundary, err = extract_boundary(ctype)
+		local first, parts = body, nil
+		if boundary then
+			fields, parts, err = multipart_fields(function()
+				local chunk = first or f and f:read(1048576)
+				first = nil
+				return chunk
+			end, boundary)
 		end
-		length = #body
-		if length <= BODY_LIMIT then
-			if kind == "text" then
-				local c = body:match("^%s*([{%[<])")
-				kind = c == "<" and "xml" or c and "json"
-				if not kind then
-					return
-				end
+		if f then
+			f:close()
+		end
+		if not boundary then
+			return ngx.HTTP_FORBIDDEN, err
+		elseif not fields then
+			return parts, err
+		elseif parts == 0 then
+			if #body > BODY_LIMIT then
+				return 413, "no multipart part in over " .. BODY_LIMIT .. " bytes"
 			end
-			if kind == "xml" then
-				local hit, _, err = ngx.re.find(body, XML_RULE, "jo")
-				if hit or err then
-					return ngx.HTTP_FORBIDDEN, "XML rule" .. (err and ", " .. err or "")
-				end
+			fields = { { "", body } }
+		end
+	else
+		if f then
+			f:close()
+		end
+		if #body > BODY_LIMIT then
+			return over, "over " .. BODY_LIMIT .. " bytes"
+		end
+		if kind == "text" then
+			local c = body:match("^%s*([{%[<])")
+			kind = c == "<" and "xml" or c and "json"
+			if not kind then
 				return
 			end
-			local fields
-			if kind == "form" then
-				fields = {}
-				for name, values in pairs(ngx.decode_args(body, BODY_FIELDS + 1)) do
-					for _, v in ipairs(type(values) == "table" and values or { values }) do
-						fields[#fields + 1] = { name, tostring(v) }
-					end
-				end
-			elseif kind == "multipart" then
-				fields = multipart_fields(body, ctype) or { { "", body } }
-			else
-				fields = json_fields(body) or { { "", json_text(body) } }
-			end
-			if #fields > BODY_FIELDS then
-				return 413, "over " .. BODY_FIELDS .. " fields"
-			end
-			for k = 1, #fields do
-				fields[#fields + 1] = { fields[k][1], fields[k][1] }
-			end
-			local reason = rule_hit(fields)
-			if reason then
-				return ngx.HTTP_FORBIDDEN, "field " .. reason
+		end
+		if kind == "xml" then
+			local hit, _, err = ngx.re.find(body, XML_RULE, "jo")
+			if hit or err then
+				return ngx.HTTP_FORBIDDEN, "XML rule" .. (err and ", " .. err or "")
 			end
 			return
+		elseif kind == "form" then
+			fields = {}
+			for name, values in pairs(ngx.decode_args(body, BODY_FIELDS + 1)) do
+				for _, v in ipairs(type(values) == "table" and values or { values }) do
+					fields[#fields + 1] = { name, tostring(v) }
+				end
+			end
+		else
+			fields = json_fields(body) or { { "", json_text(body) } }
 		end
 	end
-	if kind ~= "multipart" and kind ~= "text" then
-		return 413, "over " .. BODY_LIMIT .. " bytes"
+	if #fields > BODY_FIELDS then
+		return 413, "over " .. BODY_FIELDS .. " fields"
+	end
+	for k = 1, #fields do
+		fields[#fields + 1] = { fields[k][1], fields[k][1] }
+	end
+	local reason = rule_hit(fields)
+	if reason then
+		return ngx.HTTP_FORBIDDEN, "field " .. reason
 	end
 end
 
