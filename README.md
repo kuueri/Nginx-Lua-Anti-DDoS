@@ -227,8 +227,8 @@ The WAF rules apply to all requests. A request that matches a rule gets `403`, b
 - After 5 of them in 10 minutes, it bans the address for 1 hour.
 - Each later ban of the same address is two times longer than the ban before it.
   So the next bans last 2 hours, 4 hours, 8 hours, and so on, up to 512 hours (the tenth ban and all later bans).
-  The ban count is in the `waf_strikes` shared dict, so a reload keeps it and only an nginx restart clears it.
-  The ban count expires 30 days after the first ban of the address.
+  The ban and its count are in the `waf_bans` shared dict, separate from `waf_strikes`, so a reload keeps them and only an nginx restart clears them.
+  The ban count expires 30 days after the last ban of the address ends.
 - It does not count a `403` that ends while the address is already banned, so one burst of parallel HTTP/2 requests bans only once.
 - It does not count a `403` from the application, for example DSpace, or from a `return 403` in the site config.
 - It does not count a `403` that nginx sends after the WAF let the request through, for example for a directory without an index file and with `autoindex off`.

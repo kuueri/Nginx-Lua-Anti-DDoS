@@ -2,28 +2,52 @@
 local script = arg[0]:gsub("[^/]*$", "") .. "../config/waf-ban.lua"
 
 local now = 0
-local store = {}
-local dict = {
-	get = function(_, k)
-		local e = store[k]
-		return e and (not e.exp or e.exp > now) and e.v or nil
-	end,
-	set = function(_, k, v, ttl)
-		store[k] = { v = v, exp = ttl and now + ttl }
-	end,
-	delete = function(_, k)
-		store[k] = nil
-	end,
-	incr = function(self, k, n, init, ttl)
-		local v = self:get(k)
-		if v == nil then
-			store[k] = { v = init + n, exp = ttl and now + ttl }
-		else
-			store[k].v = v + n
-		end
-		return store[k].v
-	end,
-}
+local strikes_store = {}
+local bans_store = {}
+local bans_hooks = {}
+local function make_dict(store, hooks)
+	return {
+		get = function(_, k)
+			local e = store[k]
+			return e and (not e.exp or e.exp > now) and e.v or nil
+		end,
+		set = function(_, k, v, ttl)
+			if hooks and hooks.fail_set then
+				return false, hooks.fail_set
+			end
+			store[k] = { v = v, exp = ttl and now + ttl }
+			return true
+		end,
+		add = function(self, k, v, ttl)
+			if hooks and hooks.before_add then
+				hooks.before_add(k)
+			end
+			if hooks and hooks.fail_add then
+				return false, hooks.fail_add
+			end
+			if self:get(k) ~= nil then
+				return false, "exists"
+			end
+			store[k] = { v = v, exp = ttl and now + ttl }
+			return true
+		end,
+		delete = function(_, k)
+			store[k] = nil
+		end,
+		incr = function(self, k, n, init, ttl)
+			local v = self:get(k)
+			if v == nil then
+				store[k] = { v = init + n, exp = ttl and now + ttl }
+			else
+				store[k].v = v + n
+			end
+			return store[k].v
+		end,
+	}
+end
+local strikes_dict = make_dict(strikes_store)
+local bans_dict = make_dict(bans_store, bans_hooks)
+local logs_emitted = {}
 
 localized_global = {
 	WAF_URI_Request_table = {
@@ -75,7 +99,7 @@ local function start(ip, opts)
 	local ctx, exited, cleared, header = {}, nil, {}, {}
 	local function env(phase, status)
 		_G.ngx = {
-			shared = { waf_strikes = dict },
+			shared = { waf_strikes = strikes_dict, waf_bans = bans_dict },
 			var = {
 				remote_addr = ip,
 				realip_remote_addr = not opts.realip_nil and (opts.realip or ip) or nil,
@@ -157,6 +181,7 @@ local function start(ip, opts)
 			ctx = ctx,
 			status = status,
 			HTTP_FORBIDDEN = 403,
+			ERR = 4,
 			WARN = 5,
 			get_phase = function()
 				return phase
@@ -165,7 +190,13 @@ local function start(ip, opts)
 				exited = code
 				error(EXIT)
 			end,
-			log = function() end,
+			log = function(level, ...)
+				local parts = { ... }
+				for i = 1, #parts do
+					parts[i] = tostring(parts[i])
+				end
+				logs_emitted[#logs_emitted + 1] = { level = level, msg = table.concat(parts) }
+			end,
 		}
 	end
 	if not opts.site_return then
@@ -291,14 +322,18 @@ end
 for _, log in ipairs(logs) do
 	log()
 end
-check(store["bans:" .. burst].v == 1, "one HTTP/2 burst of 10 hits must ban once, not twice")
-check(store["bans:" .. burst].exp ~= nil, "the ban history must expire")
+check(bans_store["bans:" .. burst].v == 1, "one HTTP/2 burst of 10 hits must ban once, not twice")
+check(bans_store["bans:" .. burst].exp ~= nil, "the ban history must expire")
+check(
+	strikes_store["ban:" .. burst] == nil and strikes_store["bans:" .. burst] == nil,
+	"bans must live in waf_bans, not waf_strikes"
+)
 local above = "203.0.113.27"
-store["hit:" .. above] = { v = 7, exp = now + 600 }
+strikes_store["hit:" .. above] = { v = 7, exp = now + 600 }
 request(above, { status = 403 })
 check(request(above) == 403, "a hit count already above the limit must still ban")
 local repeat_ip = "203.0.113.28"
-store["bans:" .. repeat_ip] = { v = 20, exp = now + 2592000 }
+bans_store["bans:" .. repeat_ip] = { v = 20, exp = now + 2592000 }
 for _ = 1, 5 do
 	request(repeat_ip, { status = 403 })
 end
@@ -306,6 +341,58 @@ now = now + 512 * 3600 - 1
 check(request(repeat_ip) == 403, "a repeat ban must last up to its 512-hour cap")
 now = now + 2
 check(request(repeat_ip) == 200, "a repeat ban must end after its 512-hour cap")
+
+local raced = "203.0.113.90"
+for _ = 1, 4 do
+	request(raced, { status = 403 })
+end
+logs_emitted = {}
+bans_hooks.before_add = function(k)
+	bans_store[k] = { v = true, exp = now + 3600 }
+	bans_store["bans:" .. raced] = { v = 1, exp = now + 3600 + 2592000 }
+end
+request(raced, { status = 403 })
+bans_hooks.before_add = nil
+check(bans_store["bans:" .. raced].v == 1, "concurrent worker winning ban:add must not increment bans twice")
+check(#logs_emitted == 0, "losing worker in ban:add race must not emit duplicate ban log")
+
+local oom_ip = "203.0.113.91"
+for _ = 1, 4 do
+	request(oom_ip, { status = 403 })
+end
+logs_emitted = {}
+bans_hooks.fail_add = "no memory"
+request(oom_ip, { status = 403 })
+bans_hooks.fail_add = nil
+check(bans_store["bans:" .. oom_ip] == nil, "failed ban:add due to no memory must not increment ban history")
+check(strikes_store["hit:" .. oom_ip] ~= nil, "failed ban:add must keep hit counter intact")
+check(
+	#logs_emitted == 1 and logs_emitted[1].level == 4 and logs_emitted[1].msg:find("no memory", 1, true),
+	"failed ban:add must log an ERR instead of a false ban WARN"
+)
+
+local persistent = "203.0.113.92"
+for step = 1, 10 do
+	for _ = 1, 5 do
+		request(persistent, { status = 403 })
+	end
+	now = now + 3600 * 2 ^ (step - 1) + 1
+end
+for _ = 1, 5 do
+	request(persistent, { status = 403 })
+end
+now = now + 512 * 3600 - 1
+check(request(persistent) == 403, "11th consecutive ban past 30 days must stay at 512 hours, not reset to 1 hour")
+now = now + 2 + 2592000
+for _ = 1, 5 do
+	request(persistent, { status = 403 })
+end
+now = now + 3601
+check(request(persistent) == 200, "ban history must reset to 1 hour after 30 quiet days past the last ban")
+
+bans_store["ban:" .. repeat_ip] = { v = true, exp = now + 3600 }
+local banned_status, banned_cleared = request(repeat_ip, { realip = "192.168.19.7" })
+check(banned_status == 403 and next(banned_cleared) == nil, "banned IP must exit immediately before header clearing")
 
 -- Crawlers, AI agents, and Turnitin are not banned for a few payload hits, e.g. links planted with SQLi; the 403 itself stays.
 -- 50 payload hits within 10 minutes ban them, because anyone can send a crawler User-Agent; a generic HTTP client is banned at 5.

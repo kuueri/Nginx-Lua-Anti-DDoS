@@ -39,7 +39,8 @@ ngx = {
 			["2001:db8::1"] = "x",
 			["cachedpage"] = "x",
 		}),
-		waf_strikes = dict({ ["ban:5.5.5.5"] = true, ["hit:6.6.6.6"] = 2 }),
+		waf_strikes = dict({ ["hit:6.6.6.6"] = 2 }),
+		waf_bans = dict({ ["ban:5.5.5.5"] = true, ["bans:5.5.5.5"] = 2 }),
 	},
 }
 

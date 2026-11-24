@@ -44,7 +44,7 @@ for _, k in ipairs(keys) do
 		out.blocked_ips_ttl[k] = dict:ttl(k)
 	end
 end
-for _, k in ipairs(ngx.shared.waf_strikes:get_keys(MAX_KEYS)) do
+for _, k in ipairs(ngx.shared.waf_bans:get_keys(MAX_KEYS)) do
 	if k:find("^ban:") then
 		out.waf_bans = out.waf_bans + 1
 	end

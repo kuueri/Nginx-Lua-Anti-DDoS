@@ -8,477 +8,510 @@ local AI_WINDOW = 60
 local BODY_LIMIT = 131072
 local BODY_FIELDS = 1000
 local BAN_HISTORY_TTL = 2592000
-local AI_AGENTS = {
-	"gptbot",
-	"chatgpt-user",
-	"oai-searchbot",
-	"claudebot",
-	"claude-user",
-	"claude-searchbot",
-	"claude-web",
-	"anthropic-ai",
-	"perplexitybot",
-	"perplexity-user",
-	"deepseek",
-	"ai2bot",
-	"ccbot",
-	"bytespider",
-	"meta-externalagent",
-	"amazonbot",
-	"cohere-ai",
-	"mistralai-user",
-	"duckassistbot",
-	"youbot",
-}
-local CRAWLERS = { "bot", "crawl", "spider", "slurp", "turnitin", "facebookexternalhit" }
 
-local strikes = ngx.shared.waf_strikes
-local ip = ngx.var.remote_addr
-local ua = (ngx.var.http_user_agent or ""):lower()
-local cache = package.loaded["waf_ban_cache"] or {}
-package.loaded["waf_ban_cache"] = cache
+local phase = ngx.get_phase()
+local cache = package.loaded["waf_ban_cache"]
+if not cache then
+	cache = {}
+	package.loaded["waf_ban_cache"] = cache
+end
 
-if ngx.get_phase() == "access" then
+if phase == "access" then
 	cache.upstream = cache.upstream or assert(loadfile("/etc/nginx/lua/waf.lua"))
 	cache.upstream()
 	ngx.ctx.waf_access_passed = true
 	return
 end
 
-local function is_private(addr)
-	return addr:find("^127%.")
-		or addr:find("^10%.")
-		or addr:find("^192%.168%.")
-		or addr:find("^172%.1[6-9]%.")
-		or addr:find("^172%.2%d%.")
-		or addr:find("^172%.3[01]%.")
-		or addr == "::1"
-		or addr:find("^f[cd]")
-end
-
-local function compiled(name, prefix, suffix)
-	local rules = localized_global[name]
-	if cache[name] ~= rules then
-		local out = {}
-		for i, rule in ipairs(rules) do
-			local key = rule[1]:gsub("[%^%$]", "")
-			out[i] = { key == ".*" or key == "(?s).*", "^(?i)" .. key .. "$", prefix .. rule[2] .. suffix }
-		end
-		cache[name], cache[name .. " compiled"] = rules, out
-	end
-	return cache[name .. " compiled"]
-end
-
-local function find(list)
-	for _, name in ipairs(list) do
-		if ua:find(name, 1, true) then
-			return name
-		end
+if phase == "log" then
+	if
+		not ngx.ctx.waf_ban_checked
+		or ngx.ctx.waf_access_passed
+		or ngx.status ~= ngx.HTTP_FORBIDDEN
+		or ngx.var.upstream_status
+	then
+		return
 	end
 end
 
-local JSON_ESCAPES = { b = "\b", f = "\f", n = "\n", r = "\r", t = "\t" }
-local XML_RULE =
-	[[(?is)(?:<!(?:doctype|entity)\s|<(?:[\w.-]+:)?include\b[^<>]*\bhref\s*=|http://www\.w3\.org/1999/XSL/Transform|<(?:java|object|void|new)\b[^<>]*\bclass\s*=|<\?(?:php|=)|<script(?![a-z0-9_-])|\$\{jndi|^(?:(?:[^$]++|\$(?!\{))*+\$\{[^}:]*+\})*+(?:[^$]++|\$(?!\{))*+\$\{[^}:]*+:[^}]*+\}|[$#]\{\s*\(*\s*t\s*\(|(?:getclass\s*\(\s*\)\s*\.\s*forname|\.class\.forname|\.inspect)\s*\(|new\s+java\.lang\.(?:processbuilder|runtime)|<#assign\b|freemarker\.template\.utility\.)]]
+local ip = ngx.var.remote_addr
+local bans = ngx.shared.waf_bans
+if phase == "rewrite" and bans:get("ban:" .. ip) then
+	return ngx.exit(ngx.HTTP_FORBIDDEN)
+end
 
-local function json_text(s)
-	return (
-		s:gsub("\\(.)(%x?%x?%x?%x?)", function(c, h)
-			if c == "u" and #h == 4 and h:sub(1, 2) == "00" then
-				return string.char(tonumber(h, 16))
+local lib = cache.lib
+if not lib then
+	local AI_AGENTS = {
+		"gptbot",
+		"chatgpt-user",
+		"oai-searchbot",
+		"claudebot",
+		"claude-user",
+		"claude-searchbot",
+		"claude-web",
+		"anthropic-ai",
+		"perplexitybot",
+		"perplexity-user",
+		"deepseek",
+		"ai2bot",
+		"ccbot",
+		"bytespider",
+		"meta-externalagent",
+		"amazonbot",
+		"cohere-ai",
+		"mistralai-user",
+		"duckassistbot",
+		"youbot",
+	}
+	local CRAWLERS = { "bot", "crawl", "spider", "slurp", "turnitin", "facebookexternalhit" }
+	local JSON_ESCAPES = { b = "\b", f = "\f", n = "\n", r = "\r", t = "\t" }
+	local XML_RULE =
+		[[(?is)(?:<!(?:doctype|entity)\s|<(?:[\w.-]+:)?include\b[^<>]*\bhref\s*=|http://www\.w3\.org/1999/XSL/Transform|<(?:java|object|void|new)\b[^<>]*\bclass\s*=|<\?(?:php|=)|<script(?![a-z0-9_-])|\$\{jndi|^(?:(?:[^$]++|\$(?!\{))*+\$\{[^}:]*+\})*+(?:[^$]++|\$(?!\{))*+\$\{[^}:]*+:[^}]*+\}|[$#]\{\s*\(*\s*t\s*\(|(?:getclass\s*\(\s*\)\s*\.\s*forname|\.class\.forname|\.inspect)\s*\(|new\s+java\.lang\.(?:processbuilder|runtime)|<#assign\b|freemarker\.template\.utility\.)]]
+
+	local function is_private(addr)
+		return addr:find("^127%.")
+			or addr:find("^10%.")
+			or addr:find("^192%.168%.")
+			or addr:find("^172%.1[6-9]%.")
+			or addr:find("^172%.2%d%.")
+			or addr:find("^172%.3[01]%.")
+			or addr == "::1"
+			or addr:find("^f[cd]")
+	end
+
+	local function compiled(name, prefix, suffix)
+		local rules = localized_global[name]
+		if cache[name] ~= rules then
+			local out = {}
+			for i, rule in ipairs(rules) do
+				local key = rule[1]:gsub("[%^%$]", "")
+				out[i] = { key == ".*" or key == "(?s).*", "^(?i)" .. key .. "$", prefix .. rule[2] .. suffix }
 			end
-			return (JSON_ESCAPES[c] or c) .. h
-		end)
-	)
-end
-
-local function json_fields(body)
-	local fields, pos = {}, 1
-	local function skip()
-		pos = body:find("[^ \t\r\n]", pos) or #body + 1
+			cache[name], cache[name .. " compiled"] = rules, out
+		end
+		return cache[name .. " compiled"]
 	end
-	local function str()
-		local at = pos + 1
-		while true do
-			local q = body:find('["\\]', at)
-			if not q then
-				return
+
+	local function find(list, ua)
+		for _, name in ipairs(list) do
+			if ua:find(name, 1, true) then
+				return name
 			end
-			if body:byte(q) == 34 then
-				local s = json_text(body:sub(pos + 1, q - 1))
-				pos = q + 1
-				return s
-			end
-			at = q + 2
 		end
 	end
-	local value
-	local function members(key, depth, close)
-		pos = pos + 1
-		skip()
-		if body:sub(pos, pos) == close then
+
+	local function json_text(s)
+		return (
+			s:gsub("\\(.)(%x?%x?%x?%x?)", function(c, h)
+				if c == "u" and #h == 4 and h:sub(1, 2) == "00" then
+					return string.char(tonumber(h, 16))
+				end
+				return (JSON_ESCAPES[c] or c) .. h
+			end)
+		)
+	end
+
+	local function json_fields(body)
+		local fields, pos = {}, 1
+		local function skip()
+			pos = body:find("[^ \t\r\n]", pos) or #body + 1
+		end
+		local function str()
+			local at = pos + 1
+			while true do
+				local q = body:find('["\\]', at)
+				if not q then
+					return
+				end
+				if body:byte(q) == 34 then
+					local s = json_text(body:sub(pos + 1, q - 1))
+					pos = q + 1
+					return s
+				end
+				at = q + 2
+			end
+		end
+		local value
+		local function members(key, depth, close)
 			pos = pos + 1
-			return true
-		end
-		local d
-		repeat
-			local k = key
-			if close == "}" then
-				skip()
-				k = body:sub(pos, pos) == '"' and str()
-				skip()
-				if not k or body:sub(pos, pos) ~= ":" then
-					return
-				end
-				pos = pos + 1
-				fields[#fields + 1] = { k, k }
-				if #fields > BODY_FIELDS then
-					return
-				end
-			end
-			if not value(k, depth + 1) then
-				return
-			end
 			skip()
-			d = body:sub(pos, pos)
-			pos = pos + 1
-		until d ~= ","
-		return d == close
-	end
-	function value(key, depth)
-		skip()
-		local c = body:sub(pos, pos)
-		if depth > 100 then
-			return
-		elseif c == "{" then
-			return members(key, depth, "}")
-		elseif c == "[" then
-			return members(key, depth, "]")
-		end
-		local s = c == '"' and str() or body:match("^[%w.+-]+", pos)
-		if not s then
-			return
-		elseif c ~= '"' then
-			pos = pos + #s
-		end
-		fields[#fields + 1] = { key, s }
-		return #fields <= BODY_FIELDS
-	end
-	if value("", 0) then
-		skip()
-		return pos > #body and fields or nil
-	end
-end
-
-local function trim(s)
-	return s and s:match("^[ \t]*(.-)[ \t]*$")
-end
-
-local function extract_boundary(ctype)
-	local at = ctype:find("boundary", 1, true) or ctype:lower():find("boundary", 1, true)
-	local value = at and ctype:sub(at):match("=(.*)")
-	local php = value and (value:sub(1, 1) == '"' and value:match('^"([^"]*)"') or value:match("^[^,;]*"))
-	local rfc, count, pos = nil, 0, (ctype:find(";", 1, true) or #ctype) + 1
-	while pos <= #ctype do
-		local name, stop = ctype:match("^%s*([^=;]*)()", pos)
-		local param
-		pos = stop
-		if ctype:sub(pos, pos) == "=" then
-			local q = ctype:match('^%s*()"', pos + 1)
-			if q then
-				local e = q + 1
-				while e <= #ctype and ctype:sub(e, e) ~= '"' do
-					e = e + (ctype:sub(e, e) == "\\" and 2 or 1)
+			if body:sub(pos, pos) == close then
+				pos = pos + 1
+				return true
+			end
+			local d
+			repeat
+				local k = key
+				if close == "}" then
+					skip()
+					k = body:sub(pos, pos) == '"' and str()
+					skip()
+					if not k or body:sub(pos, pos) ~= ":" then
+						return
+					end
+					pos = pos + 1
+					fields[#fields + 1] = { k, k }
+					if #fields > BODY_FIELDS then
+						return
+					end
 				end
-				param = ctype:sub(q + 1, e - 1):gsub("\\(.)", "%1")
-				pos = e + 1
-			else
-				param = ctype:match("^[^;]*", pos + 1)
-				pos = pos + 1 + #param
+				if not value(k, depth + 1) then
+					return
+				end
+				skip()
+				d = body:sub(pos, pos)
+				pos = pos + 1
+			until d ~= ","
+			return d == close
+		end
+		function value(key, depth)
+			skip()
+			local c = body:sub(pos, pos)
+			if depth > 100 then
+				return
+			elseif c == "{" then
+				return members(key, depth, "}")
+			elseif c == "[" then
+				return members(key, depth, "]")
+			end
+			local s = c == '"' and str() or body:match("^[%w.+-]+", pos)
+			if not s then
+				return
+			elseif c ~= '"' then
+				pos = pos + #s
+			end
+			fields[#fields + 1] = { key, s }
+			return #fields <= BODY_FIELDS
+		end
+		if value("", 0) then
+			skip()
+			return pos > #body and fields or nil
+		end
+	end
+
+	local function trim(s)
+		return s and s:match("^[ \t]*(.-)[ \t]*$")
+	end
+
+	local function extract_boundary(ctype)
+		local at = ctype:find("boundary", 1, true) or ctype:lower():find("boundary", 1, true)
+		local value = at and ctype:sub(at):match("=(.*)")
+		local php = value and (value:sub(1, 1) == '"' and value:match('^"([^"]*)"') or value:match("^[^,;]*"))
+		local rfc, count, pos = nil, 0, (ctype:find(";", 1, true) or #ctype) + 1
+		while pos <= #ctype do
+			local name, stop = ctype:match("^%s*([^=;]*)()", pos)
+			local param
+			pos = stop
+			if ctype:sub(pos, pos) == "=" then
+				local q = ctype:match('^%s*()"', pos + 1)
+				if q then
+					local e = q + 1
+					while e <= #ctype and ctype:sub(e, e) ~= '"' do
+						e = e + (ctype:sub(e, e) == "\\" and 2 or 1)
+					end
+					param = ctype:sub(q + 1, e - 1):gsub("\\(.)", "%1")
+					pos = e + 1
+				else
+					param = ctype:match("^[^;]*", pos + 1)
+					pos = pos + 1 + #param
+				end
+			end
+			pos = (ctype:find(";", pos, true) or #ctype) + 1
+			if trim(name):lower() == "boundary" then
+				count = count + 1
+				rfc = param
 			end
 		end
-		pos = (ctype:find(";", pos, true) or #ctype) + 1
-		if trim(name):lower() == "boundary" then
-			count = count + 1
-			rfc = param
+		if count > 1 then
+			return nil, "multiple boundaries"
 		end
+		php, rfc = trim(php), trim(rfc)
+		if not php or php == "" or php ~= rfc then
+			return nil, "ambiguous boundary"
+		end
+		return php
 	end
-	if count > 1 then
-		return nil, "multiple boundaries"
-	end
-	php, rfc = trim(php), trim(rfc)
-	if not php or php == "" or php ~= rfc then
-		return nil, "ambiguous boundary"
-	end
-	return php
-end
 
-local function part_disposition(head)
-	local lower = head:lower()
-	local _, n = lower:gsub("\ncontent%-disposition:", "")
-	if n > 1 then
-		return nil, "duplicate content-disposition"
-	end
-	local cd = lower:match("\ncontent%-disposition:([^\n]*)") or ""
-	local plain, bare, at = cd:gsub("\\.", ""), {}, 1
-	while true do
-		local q = plain:find("[\"']", at)
-		bare[#bare + 1] = plain:sub(at, (q or 0) - 1)
-		local close = q and plain:find(plain:sub(q, q), q + 1, true)
-		if not close then
-			break
+	local function part_disposition(head)
+		local lower = head:lower()
+		local _, n = lower:gsub("\ncontent%-disposition:", "")
+		if n > 1 then
+			return nil, "duplicate content-disposition"
 		end
-		at = close + 1
-	end
-	local name = cd:match(';[ \t]*name="([^"]*)"') or cd:match(";[ \t]*name=([^;\r]*)") or ""
-	return table.concat(bare):find(";[ \t]*filename%*?=") ~= nil, name
-end
-
-local function multipart_fields(read, boundary)
-	local delim = "\n--" .. boundary
-	local buf, pos, eof = "", 1, false
-	local fields, parts, text = {}, 0, 0
-	local function more()
-		local chunk = not eof and read()
-		if not chunk then
-			eof = true
-			return false
-		end
-		buf = pos > #buf and chunk or buf:sub(pos) .. chunk
-		pos = 1
-		return true
-	end
-	local function upto(keep)
-		local out, size = {}, 0
+		local cd = lower:match("\ncontent%-disposition:([^\n]*)") or ""
+		local plain, bare, at = cd:gsub("\\.", ""), {}, 1
 		while true do
-			local a, b = buf:find(delim, pos, true)
-			local stop = a and a - 1 or eof and #buf or math.max(pos - 1, #buf - #delim)
-			if keep then
-				size = size + stop - pos + 1
-				if text + size > BODY_LIMIT then
-					return nil, nil, true
-				end
-				out[#out + 1] = buf:sub(pos, stop)
+			local q = plain:find("[\"']", at)
+			bare[#bare + 1] = plain:sub(at, (q or 0) - 1)
+			local close = q and plain:find(plain:sub(q, q), q + 1, true)
+			if not close then
+				break
 			end
-			pos = a and b + 1 or stop + 1
-			if a or eof then
-				text = text + size
-				return a ~= nil, table.concat(out)
-			end
-			more()
+			at = close + 1
 		end
+		local name = cd:match(';[ \t]*name="([^"]*)"') or cd:match(";[ \t]*name=([^;\r]*)") or ""
+		return table.concat(bare):find(";[ \t]*filename%*?=") ~= nil, name
 	end
-	while #buf < #delim and more() do
-	end
-	local found
-	if buf:sub(1, #delim - 1) == delim:sub(2) then
-		found, pos = true, #delim
-	else
-		found = upto(false)
-	end
-	while found do
-		while #buf - pos < 1 and more() do
-		end
-		if buf:sub(pos, pos + 1) == "--" then
-			break
-		end
-		parts = parts + 1
-		local le, hs, he
-		repeat
-			le = buf:find("\n", pos, true)
-			hs, he = nil, nil
-			if le then
-				hs, he = buf:find("\n\r?\n", le)
-			end
-		until hs or #buf - pos > 65536 or not more()
-		if not hs or hs - pos > 65536 or (buf:find(delim, pos, true) or hs) < hs then
-			return nil, 413, "multipart part without a header end"
-		end
-		local is_file, name = part_disposition(buf:sub(le, hs - 1))
-		if is_file == nil then
-			return nil, ngx.HTTP_FORBIDDEN, name
-		end
-		pos = he + 1
-		local content, over
-		found, content, over = upto(not is_file)
-		if over then
-			return nil, 413, "over " .. BODY_LIMIT .. " bytes of multipart fields"
-		end
-		if not is_file then
-			fields[#fields + 1] = { name, content }
-			if #fields > BODY_FIELDS then
-				return nil, 413, "over " .. BODY_FIELDS .. " fields"
-			end
-		end
-	end
-	return fields, parts
-end
 
-local function rule_hit(fields)
-	for i, rule in ipairs(compiled("WAF_query_string_Request_table", "^(?i)", "$")) do
-		for _, field in ipairs(fields) do
-			if rule[1] or ngx.re.find(field[1], rule[2], "jos") then
-				local from, _, err = ngx.re.find(field[2], rule[3], "jo")
-				if from or err then
-					local name = field[1]:sub(1, 64):gsub("%c", "?")
-					return name .. ", WAF_query_string_Request_table rule " .. i .. (err and ", " .. err or "")
-				end
+	local function multipart_fields(read, boundary)
+		local delim = "\n--" .. boundary
+		local buf, pos, eof = "", 1, false
+		local fields, parts, text = {}, 0, 0
+		local function more()
+			local chunk = not eof and read()
+			if not chunk then
+				eof = true
+				return false
 			end
-		end
-	end
-end
-
-local function log_hit(what, block, reason)
-	ngx.log(
-		ngx.STDERR,
-		"[WAF] ",
-		block and "Blocked" or "Would block (log only)",
-		" Request ",
-		what,
-		" prohibited: ",
-		ngx.var.request_uri,
-		" (",
-		reason,
-		")"
-	)
-end
-
-local function skipped(name)
-	for _, skip in ipairs(localized_global.WAF_cookie_skip or {}) do
-		if name:find(skip) then
+			buf = pos > #buf and chunk or buf:sub(pos) .. chunk
+			pos = 1
 			return true
 		end
+		local function upto(keep)
+			local out, size = {}, 0
+			while true do
+				local a, b = buf:find(delim, pos, true)
+				local stop = a and a - 1 or eof and #buf or math.max(pos - 1, #buf - #delim)
+				if keep then
+					size = size + stop - pos + 1
+					if text + size > BODY_LIMIT then
+						return nil, nil, true
+					end
+					out[#out + 1] = buf:sub(pos, stop)
+				end
+				pos = a and b + 1 or stop + 1
+				if a or eof then
+					text = text + size
+					return a ~= nil, table.concat(out)
+				end
+				more()
+			end
+		end
+		while #buf < #delim and more() do
+		end
+		local found
+		if buf:sub(1, #delim - 1) == delim:sub(2) then
+			found, pos = true, #delim
+		else
+			found = upto(false)
+		end
+		while found do
+			while #buf - pos < 1 and more() do
+			end
+			if buf:sub(pos, pos + 1) == "--" then
+				break
+			end
+			parts = parts + 1
+			local le, hs, he
+			repeat
+				le = buf:find("\n", pos, true)
+				hs, he = nil, nil
+				if le then
+					hs, he = buf:find("\n\r?\n", le)
+				end
+			until hs or #buf - pos > 65536 or not more()
+			if not hs or hs - pos > 65536 or (buf:find(delim, pos, true) or hs) < hs then
+				return nil, 413, "multipart part without a header end"
+			end
+			local is_file, name = part_disposition(buf:sub(le, hs - 1))
+			if is_file == nil then
+				return nil, ngx.HTTP_FORBIDDEN, name
+			end
+			pos = he + 1
+			local content, over
+			found, content, over = upto(not is_file)
+			if over then
+				return nil, 413, "over " .. BODY_LIMIT .. " bytes of multipart fields"
+			end
+			if not is_file then
+				fields[#fields + 1] = { name, content }
+				if #fields > BODY_FIELDS then
+					return nil, 413, "over " .. BODY_FIELDS .. " fields"
+				end
+			end
+		end
+		return fields, parts
 	end
-end
 
-local function cookie_fields()
-	local fields = {}
-	for pair in (ngx.var.http_cookie or ""):gmatch("[^;]+") do
-		local name, value = pair:match("^([^=]*)=?(.*)$")
-		name = name:match("^%s*(.-)%s*$")
-		if name ~= "" and not skipped(name) then
-			local dname = ngx.unescape_uri(name)
-			fields[#fields + 1] = { dname, dname }
-			if value ~= "" then
-				fields[#fields + 1] = { dname, ngx.unescape_uri(value) }
+	local function rule_hit(fields)
+		for i, rule in ipairs(compiled("WAF_query_string_Request_table", "^(?i)", "$")) do
+			for _, field in ipairs(fields) do
+				if rule[1] or ngx.re.find(field[1], rule[2], "jos") then
+					local from, _, err = ngx.re.find(field[2], rule[3], "jo")
+					if from or err then
+						local name = field[1]:sub(1, 64):gsub("%c", "?")
+						return name .. ", WAF_query_string_Request_table rule " .. i .. (err and ", " .. err or "")
+					end
+				end
 			end
 		end
 	end
-	return fields
-end
 
-local function body_hit(uri)
-	local ctype = ngx.var.content_type or ""
-	local lower = ctype:lower()
-	local subtype = lower:match("^%s*[^/;%s]+/([^;%s]*)") or ""
-	local kind = lower:find("^%s*application/x%-www%-form%-urlencoded") and "form"
-		or lower:find("^%s*multipart/form%-data") and "multipart"
-		or lower:find("json", 1, true) and "json"
-		or (subtype == "xml" or subtype:sub(-4) == "+xml") and "xml"
-		or (ctype == "" or lower:find("^%s*text/plain")) and "text"
-	if not kind then
-		return
+	local function log_hit(what, block, reason)
+		ngx.log(
+			ngx.STDERR,
+			"[WAF] ",
+			block and "Blocked" or "Would block (log only)",
+			" Request ",
+			what,
+			" prohibited: ",
+			ngx.var.request_uri,
+			" (",
+			reason,
+			")"
+		)
 	end
-	for _, skip in ipairs(localized_global.WAF_body_skip) do
-		if uri:find(skip) then
+
+	local function skipped(name)
+		for _, skip in ipairs(localized_global.WAF_cookie_skip or {}) do
+			if name:find(skip) then
+				return true
+			end
+		end
+	end
+
+	local function cookie_fields()
+		local fields = {}
+		for pair in (ngx.var.http_cookie or ""):gmatch("[^;]+") do
+			local name, value = pair:match("^([^=]*)=?(.*)$")
+			name = name:match("^%s*(.-)%s*$")
+			if name ~= "" and not skipped(name) then
+				local dname = ngx.unescape_uri(name)
+				fields[#fields + 1] = { dname, dname }
+				if value ~= "" then
+					fields[#fields + 1] = { dname, ngx.unescape_uri(value) }
+				end
+			end
+		end
+		return fields
+	end
+
+	local function body_hit(uri)
+		local ctype = ngx.var.content_type or ""
+		local lower = ctype:lower()
+		local subtype = lower:match("^%s*[^/;%s]+/([^;%s]*)") or ""
+		local kind = lower:find("^%s*application/x%-www%-form%-urlencoded") and "form"
+			or lower:find("^%s*multipart/form%-data") and "multipart"
+			or lower:find("json", 1, true) and "json"
+			or (subtype == "xml" or subtype:sub(-4) == "+xml") and "xml"
+			or (ctype == "" or lower:find("^%s*text/plain")) and "text"
+		if not kind then
 			return
 		end
-	end
-	local over = kind ~= "text" and 413 or nil
-	local length = tonumber(ngx.var.content_length)
-	if kind ~= "multipart" and length and length > BODY_LIMIT then
-		return over, "over " .. BODY_LIMIT .. " bytes"
-	end
-	ngx.req.read_body()
-	local body = ngx.req.get_body_data()
-	local path = not body and ngx.req.get_body_file()
-	local f = path and assert(io.open(path, "rb"))
-	if f then
-		body = f:read(BODY_LIMIT + 1)
-	end
-	if not body then
-		if f then
-			f:close()
-		end
-		return
-	end
-	local fields
-	if kind == "multipart" then
-		local boundary, err = extract_boundary(ctype)
-		local first, parts = body, nil
-		if boundary then
-			fields, parts, err = multipart_fields(function()
-				local chunk = first or f and f:read(1048576)
-				first = nil
-				return chunk
-			end, boundary)
-		end
-		if f then
-			f:close()
-		end
-		if not boundary then
-			return ngx.HTTP_FORBIDDEN, err
-		elseif not fields then
-			return parts, err
-		elseif parts == 0 then
-			if #body > BODY_LIMIT then
-				return 413, "no multipart part in over " .. BODY_LIMIT .. " bytes"
+		for _, skip in ipairs(localized_global.WAF_body_skip) do
+			if uri:find(skip) then
+				return
 			end
-			fields = { { "", body } }
 		end
-	else
-		if f then
-			f:close()
-		end
-		if #body > BODY_LIMIT then
+		local over = kind ~= "text" and 413 or nil
+		local length = tonumber(ngx.var.content_length)
+		if kind ~= "multipart" and length and length > BODY_LIMIT then
 			return over, "over " .. BODY_LIMIT .. " bytes"
 		end
-		if kind == "text" then
-			local c = body:match("^%s*([{%[<])")
-			kind = c == "<" and "xml" or c and "json"
-			if not kind then
-				return
-			end
+		ngx.req.read_body()
+		local body = ngx.req.get_body_data()
+		local path = not body and ngx.req.get_body_file()
+		local f = path and assert(io.open(path, "rb"))
+		if f then
+			body = f:read(BODY_LIMIT + 1)
 		end
-		if kind == "xml" then
-			local hit, _, err = ngx.re.find(body, XML_RULE, "jo")
-			if hit or err then
-				return ngx.HTTP_FORBIDDEN, "XML rule" .. (err and ", " .. err or "")
+		if not body then
+			if f then
+				f:close()
 			end
 			return
-		elseif kind == "form" then
-			fields = {}
-			for name, values in pairs(ngx.decode_args(body, BODY_FIELDS + 1)) do
-				for _, v in ipairs(type(values) == "table" and values or { values }) do
-					fields[#fields + 1] = { name, tostring(v) }
+		end
+		local fields
+		if kind == "multipart" then
+			local boundary, err = extract_boundary(ctype)
+			local first, parts = body, nil
+			if boundary then
+				fields, parts, err = multipart_fields(function()
+					local chunk = first or f and f:read(1048576)
+					first = nil
+					return chunk
+				end, boundary)
+			end
+			if f then
+				f:close()
+			end
+			if not boundary then
+				return ngx.HTTP_FORBIDDEN, err
+			elseif not fields then
+				return parts, err
+			elseif parts == 0 then
+				if #body > BODY_LIMIT then
+					return 413, "no multipart part in over " .. BODY_LIMIT .. " bytes"
 				end
+				fields = { { "", body } }
 			end
 		else
-			fields = json_fields(body) or { { "", json_text(body) } }
+			if f then
+				f:close()
+			end
+			if #body > BODY_LIMIT then
+				return over, "over " .. BODY_LIMIT .. " bytes"
+			end
+			if kind == "text" then
+				local c = body:match("^%s*([{%[<])")
+				kind = c == "<" and "xml" or c and "json"
+				if not kind then
+					return
+				end
+			end
+			if kind == "xml" then
+				local hit, _, err = ngx.re.find(body, XML_RULE, "jo")
+				if hit or err then
+					return ngx.HTTP_FORBIDDEN, "XML rule" .. (err and ", " .. err or "")
+				end
+				return
+			elseif kind == "form" then
+				fields = {}
+				for name, values in pairs(ngx.decode_args(body, BODY_FIELDS + 1)) do
+					for _, v in ipairs(type(values) == "table" and values or { values }) do
+						fields[#fields + 1] = { name, tostring(v) }
+					end
+				end
+			else
+				fields = json_fields(body) or { { "", json_text(body) } }
+			end
+		end
+		if #fields > BODY_FIELDS then
+			return 413, "over " .. BODY_FIELDS .. " fields"
+		end
+		for k = 1, #fields do
+			fields[#fields + 1] = { fields[k][1], fields[k][1] }
+		end
+		local reason = rule_hit(fields)
+		if reason then
+			return ngx.HTTP_FORBIDDEN, "field " .. reason
 		end
 	end
-	if #fields > BODY_FIELDS then
-		return 413, "over " .. BODY_FIELDS .. " fields"
-	end
-	for k = 1, #fields do
-		fields[#fields + 1] = { fields[k][1], fields[k][1] }
-	end
-	local reason = rule_hit(fields)
-	if reason then
-		return ngx.HTTP_FORBIDDEN, "field " .. reason
-	end
+
+	lib = {
+		ai_agents = AI_AGENTS,
+		crawlers = CRAWLERS,
+		is_private = is_private,
+		compiled = compiled,
+		find = find,
+		rule_hit = rule_hit,
+		log_hit = log_hit,
+		cookie_fields = cookie_fields,
+		body_hit = body_hit,
+	}
+	cache.lib = lib
 end
 
-if ngx.get_phase() == "rewrite" then
+local strikes = ngx.shared.waf_strikes
+
+if phase == "rewrite" then
 	local realip = ngx.var.realip_remote_addr
 	if realip and realip ~= ip then
 		ngx.req.clear_header("X-Forwarded-For")
 		ngx.req.clear_header("CF-Connecting-IP")
-	elseif is_private(ip) then
+	elseif lib.is_private(ip) then
 		ngx.req.clear_header("CF-Connecting-IP")
-	end
-	if strikes:get("ban:" .. ip) then
-		return ngx.exit(ngx.HTTP_FORBIDDEN)
 	end
 	local args, args_err = ngx.req.get_uri_args()
 	local _, headers_err = ngx.req.get_headers()
@@ -488,7 +521,7 @@ if ngx.get_phase() == "rewrite" then
 	ngx.ctx.waf_ban_checked = true
 	local uri = ngx.var.uri
 	local url = ngx.var.scheme .. "://" .. ngx.var.host .. ngx.var.request_uri
-	for i, rule in ipairs(compiled("WAF_URI_Request_table", "(?i)", "")) do
+	for i, rule in ipairs(lib.compiled("WAF_URI_Request_table", "(?i)", "")) do
 		local hit, _, err = rule[1]
 		if not hit then
 			hit, _, err = ngx.re.find(url, rule[2], "jo")
@@ -512,7 +545,8 @@ if ngx.get_phase() == "rewrite" then
 	if ngx.req.is_internal() then
 		return
 	end
-	local agent = find(AI_AGENTS)
+	local ua = (ngx.var.http_user_agent or ""):lower()
+	local agent = lib.find(lib.ai_agents, ua)
 	if agent and (strikes:incr("ai:" .. agent, 1, 0, AI_WINDOW) or 0) > AI_LIMIT then
 		ngx.header["Retry-After"] = AI_WINDOW
 		return ngx.exit(ngx.HTTP_TOO_MANY_REQUESTS)
@@ -521,22 +555,22 @@ if ngx.get_phase() == "rewrite" then
 	for name in pairs(args) do
 		names[#names + 1] = { name, name }
 	end
-	local reason = rule_hit(names)
+	local reason = lib.rule_hit(names)
 	if reason then
-		log_hit("argument name", true, reason)
+		lib.log_hit("argument name", true, reason)
 		return ngx.exit(ngx.HTTP_FORBIDDEN)
 	end
-	reason = rule_hit(cookie_fields())
+	reason = lib.rule_hit(lib.cookie_fields())
 	if reason then
-		log_hit("cookie", localized_global.WAF_cookie_block, reason)
+		lib.log_hit("cookie", localized_global.WAF_cookie_block, reason)
 		if localized_global.WAF_cookie_block then
 			return ngx.exit(ngx.HTTP_FORBIDDEN)
 		end
 	end
 	local status
-	status, reason = body_hit(uri)
+	status, reason = lib.body_hit(uri)
 	if status then
-		log_hit("body", localized_global.WAF_body_block, reason)
+		lib.log_hit("body", localized_global.WAF_body_block, reason)
 		if localized_global.WAF_body_block then
 			return ngx.exit(status)
 		end
@@ -544,24 +578,29 @@ if ngx.get_phase() == "rewrite" then
 	return
 end
 
-if
-	not ngx.ctx.waf_ban_checked
-	or ngx.ctx.waf_access_passed
-	or ngx.status ~= ngx.HTTP_FORBIDDEN
-	or ngx.var.upstream_status
-	or is_private(ip)
-	or strikes:get("ban:" .. ip)
-then
+if lib.is_private(ip) or bans:get("ban:" .. ip) then
 	return
 end
-local crawler = find(AI_AGENTS) or find(CRAWLERS)
+local ua = (ngx.var.http_user_agent or ""):lower()
+local crawler = lib.find(lib.ai_agents, ua) or lib.find(lib.crawlers, ua)
 local key = (crawler and "crawl:" or "hit:") .. ip
 local hits = strikes:incr(key, 1, 0, crawler and CRAWLER_WINDOW or WINDOW)
 if hits and hits >= (crawler and CRAWLER_LIMIT or LIMIT) then
-	local n = strikes:incr("bans:" .. ip, 1, 0, BAN_HISTORY_TTL) or 1
-	local ban = BAN * 2 ^ (math.min(n, 10) - 1)
-	strikes:set("ban:" .. ip, true, ban)
-	strikes:delete("hit:" .. ip)
-	strikes:delete("crawl:" .. ip)
-	ngx.log(ngx.WARN, "[WAF ban] ", ip, " banned for ", ban, " s (ban ", n, ") after ", hits, " blocked requests")
+	local ok, err = bans:add("ban:" .. ip, true, BAN)
+	if ok then
+		local n = bans:incr("bans:" .. ip, 1, 0, BAN_HISTORY_TTL) or 1
+		local ban = BAN * 2 ^ (math.min(n, 10) - 1)
+		if ban > BAN then
+			local set_ok, set_err = bans:set("ban:" .. ip, true, ban)
+			if not set_ok then
+				ngx.log(ngx.ERR, "[WAF ban] failed to extend ban for ", ip, ": ", set_err)
+			end
+		end
+		bans:set("bans:" .. ip, n, ban + BAN_HISTORY_TTL)
+		strikes:delete("hit:" .. ip)
+		strikes:delete("crawl:" .. ip)
+		ngx.log(ngx.WARN, "[WAF ban] ", ip, " banned for ", ban, " s (ban ", n, ") after ", hits, " blocked requests")
+	elseif err ~= "exists" then
+		ngx.log(ngx.ERR, "[WAF ban] failed to ban ", ip, ": ", err)
+	end
 end

@@ -322,7 +322,7 @@ sync_waf() {
 		info "Adding 'include /$HTTP_CONF;' to the http block of $main_conf"
 		copy "$main_conf" "$BACKUP_DIR/nginx.conf"
 		# A manual setup may hold waf.conf's directives inline, and nginx -t fails on a second lua_shared_dict, so the include replaces them.
-		sed -i -E '/^[[:space:]]*(lua_shared_dict[[:space:]]+(antiddos|antiddos_blocked|ddos_counter|jspuzzle_tracker|waf_strikes)[[:space:]]|init_by_lua_file[[:space:]]+\/etc\/nginx\/lua\/waf-local-overrides\.lua;|(access|rewrite|log)_by_lua_file[[:space:]]+\/etc\/nginx\/lua\/waf(-ban)?\.lua;)/d' "$main_conf"
+		sed -i -E '/^[[:space:]]*(lua_shared_dict[[:space:]]+(antiddos|antiddos_blocked|ddos_counter|jspuzzle_tracker|waf_strikes|waf_bans)[[:space:]]|init_by_lua_file[[:space:]]+\/etc\/nginx\/lua\/waf-local-overrides\.lua;|(access|rewrite|log)_by_lua_file[[:space:]]+\/etc\/nginx\/lua\/waf(-ban)?\.lua;)/d' "$main_conf"
 		# After lua_package_path when the module setup added one, so the Lua path stays first in the http block.
 		if grep -qE '^[[:space:]]*lua_package_path[[:space:]]' "$main_conf"; then
 			sed -i -E "0,/^[[:space:]]*lua_package_path[[:space:]].*$/s##&\n    include /$HTTP_CONF;#" "$main_conf"
