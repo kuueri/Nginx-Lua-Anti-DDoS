@@ -43,11 +43,19 @@ local function find(list)
 	end
 end
 
+local JSON_ESCAPES = { b = "\b", f = "\f", n = "\n", r = "\r", t = "\t" }
+local XML_RULE =
+	[[(?is)(?:<!(?:doctype|entity)\s|<(?:[\w.-]+:)?include\b[^<>]*\bhref\s*=|http://www\.w3\.org/1999/XSL/Transform|<(?:java|object|void|new)\b[^<>]*\bclass\s*=|<\?(?:php|=)|<script(?![a-z0-9_-])|\$\{jndi|^(?:(?:[^$]++|\$(?!\{))*+\$\{[^}:]*+\})*+(?:[^$]++|\$(?!\{))*+\$\{[^}:]*+:[^}]*+\}|[$#]\{\s*\(*\s*t\s*\(|(?:getclass\s*\(\s*\)\s*\.\s*forname|\.class\.forname|\.inspect)\s*\(|new\s+java\.lang\.(?:processbuilder|runtime)|<#assign\b|freemarker\.template\.utility\.)]]
+
 local function json_text(s)
-	s = s:gsub("\\u00(%x%x)", function(h)
-		return string.char(tonumber(h, 16))
-	end)
-	return (s:gsub("\\([nrt])", { n = "\n", r = "\r", t = "\t" }):gsub("\\(.)", "%1"))
+	return (
+		s:gsub("\\(.)(%x?%x?%x?%x?)", function(c, h)
+			if c == "u" and #h == 4 and h:sub(1, 2) == "00" then
+				return string.char(tonumber(h, 16))
+			end
+			return (JSON_ESCAPES[c] or c) .. h
+		end)
+	)
 end
 
 local function json_fields(body)
@@ -89,6 +97,10 @@ local function json_fields(body)
 					return
 				end
 				pos = pos + 1
+				fields[#fields + 1] = { k, k }
+				if #fields > BODY_FIELDS then
+					return
+				end
 			end
 			if not value(k, depth + 1) then
 				return
@@ -192,9 +204,14 @@ end
 local function cookie_fields()
 	local fields = {}
 	for pair in (ngx.var.http_cookie or ""):gmatch("[^;]+") do
-		local name, value = pair:match("^%s*([^=]*)=?(.*)$")
-		if value ~= "" and not skipped(name) then
-			fields[#fields + 1] = { name, ngx.unescape_uri(value) }
+		local name, value = pair:match("^([^=]*)=?(.*)$")
+		name = name:match("^%s*(.-)%s*$")
+		if name ~= "" and not skipped(name) then
+			local dname = ngx.unescape_uri(name)
+			fields[#fields + 1] = { dname, dname }
+			if value ~= "" then
+				fields[#fields + 1] = { dname, ngx.unescape_uri(value) }
+			end
 		end
 	end
 	return fields
@@ -203,9 +220,12 @@ end
 local function body_hit(uri)
 	local ctype = ngx.var.content_type or ""
 	local lower = ctype:lower()
+	local subtype = lower:match("^%s*[^/;%s]+/([^;%s]*)") or ""
 	local kind = lower:find("^%s*application/x%-www%-form%-urlencoded") and "form"
 		or lower:find("^%s*multipart/form%-data") and "multipart"
 		or lower:find("json", 1, true) and "json"
+		or (subtype == "xml" or subtype:sub(-4) == "+xml") and "xml"
+		or (ctype == "" or lower:find("^%s*text/plain")) and "text"
 	if not kind then
 		return
 	end
@@ -229,6 +249,20 @@ local function body_hit(uri)
 		end
 		length = #body
 		if length <= BODY_LIMIT then
+			if kind == "text" then
+				local c = body:match("^%s*([{%[<])")
+				kind = c == "<" and "xml" or c and "json"
+				if not kind then
+					return
+				end
+			end
+			if kind == "xml" then
+				local hit, _, err = ngx.re.find(body, XML_RULE, "jo")
+				if hit or err then
+					return ngx.HTTP_FORBIDDEN, "XML rule" .. (err and ", " .. err or "")
+				end
+				return
+			end
 			local fields
 			if kind == "form" then
 				fields = {}
@@ -255,7 +289,7 @@ local function body_hit(uri)
 			return
 		end
 	end
-	if kind ~= "multipart" then
+	if kind ~= "multipart" and kind ~= "text" then
 		return 413, "over " .. BODY_LIMIT .. " bytes"
 	end
 end

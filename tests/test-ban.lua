@@ -36,6 +36,7 @@ localized_global = {
 		{ "order", ".*;.*" },
 		{ "^.*$", ".*MATCHLIMIT.*" },
 		{ "^.*$", '.*"#.*' },
+		{ "^.*$", ".*esc[\f\b\n]esc.*" },
 	},
 	WAF_body_block = true,
 	WAF_body_skip = { "^/wp%-admin/post%.php$" },
@@ -68,6 +69,14 @@ local function request(ip, opts)
 				find = function(s, p)
 					if p:find("MATCHLIMIT", 1, true) and s:find("boom", 1, true) then
 						return nil, nil, "pcre2_match() failed: -47"
+					end
+					if p:find("doctype", 1, true) then
+						for _, w in ipairs({ "<!doctype", "<!entity", "class=", "<?php", "${jndi", "<script" }) do
+							if s:lower():find(w, 1, true) then
+								return 1
+							end
+						end
+						return nil
 					end
 					return s:lower():find((p:gsub("%(%?i%)", ""):gsub("\\%.", "%%."):lower()))
 				end,
@@ -394,6 +403,57 @@ check(
 check(
 	body({ ctype = "text/plain", body = "q=union" }) == 200,
 	"a body type that PHP and Tomcat do not parse is not checked"
+)
+check(
+	body({ ctype = "application/json", body = '{"q":"esc\\fesc"}' }) == 403
+		and body({ ctype = "application/json", body = '{"q":"esc\\besc"}' }) == 403,
+	"JSON \\f and \\b escapes must decode to form feed and backspace"
+)
+check(
+	body({ ctype = "application/json", body = '{"q":"esc\\\\nesc"}' }) == 200,
+	"an escaped backslash before n must stay a backslash, not become a newline"
+)
+check(
+	body({ ctype = "application/json", body = '{"q":"a\\fb"}' }) == 200
+		and body({ ctype = "application/json", body = '{"x union y":{}}' }) == 403
+		and body({ ctype = "application/json", body = '{"x union y":{"a":1}}' }) == 403
+		and body({ ctype = "application/json", body = '{"x union y":[]}' }) == 403,
+	"outer JSON object keys on empty or nested objects/arrays must be checked"
+)
+check(body({
+	ctype = "application/atom+xml",
+	body = '<entry xmlns="http://www.w3.org/2005/Atom"><link href="https://example.org/1"/><source><title>ok</title></source><item online="true"/></entry>',
+}) == 200, "valid Atom and SOAP XML with <link>, <source>, and online= attributes must pass")
+check(
+	body({ ctype = "application/xml", body = '<!DOCTYPE foo [<!ENTITY xxe SYSTEM "file:///etc/passwd">]><a/>' }) == 403,
+	"XML body with DOCTYPE/ENTITY XXE must get 403"
+)
+check(
+	body({ ctype = "text/xml", body = '<java><object class="java.lang.ProcessBuilder"/></java>' }) == 403,
+	"XMLDecoder payload in XML body must get 403"
+)
+check(body({ ctype = "application/xml", body = over }) == 413, "an XML body over 128 KB must get 413")
+check(
+	body({ ctype = "application/vnd.openxmlformats-officedocument.wordprocessingml.document", body = over }) == 200,
+	"a binary upload whose type name holds xml must stay unchecked"
+)
+check(
+	body({ ctype = "text/plain", body = '{"q":"1 union select 2"}' }) == 403,
+	"a text/plain JSON body with a payload must get 403"
+)
+check(
+	body({ ctype = "text/plain", body = '<!DOCTYPE x [<!ENTITY a "b">]>' }) == 403,
+	"a text/plain XML body with XXE must get 403"
+)
+check(body({ body = '{"q":"union"}' }) == 403, "a JSON body without a Content-Type must be checked")
+check(
+	body({ ctype = "text/plain", body = over }) == 200,
+	"an unstructured text/plain body over 128 KB must stay unchecked"
+)
+check(request("198.51.100.220", { cookie = "union=1" }) == 403, "a cookie name with a payload must get 403")
+check(
+	request("198.51.100.221", { cookie = "un%69on=" }) == 403,
+	"a percent-encoded cookie name with an empty value must get 403"
 )
 check(
 	body({ ctype = mp, body = part(field_q, "1 union select 2") .. "--XyZ--\r\n" }) == 403,

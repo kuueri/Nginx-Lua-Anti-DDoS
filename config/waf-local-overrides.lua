@@ -429,10 +429,11 @@ localized_global.WAF_Header_Request_table = {
 localized_global.WAF_POST_Request_table = {}
 
 -- waf-ban.lua checks request bodies in the rewrite phase with WAF_query_string_Request_table; upstream never reads these two settings.
--- It checks each urlencoded field, each multipart field without a filename= parameter (PHP's test for a file), and each JSON value under its innermost object key, unquoted so that {"color":"#ffffff"} passes, with its own parser because no JSON library is built in.
--- JSON that does not parse, nests deeper than 100 levels, or holds more than 1000 values is checked as one text after \u00XX escapes are decoded.
+-- It checks each urlencoded field, each multipart field without a filename= parameter (PHP's test for a file), and each JSON object key and each JSON value under its innermost object key, unquoted so that {"color":"#ffffff"} passes, with its own parser because no JSON library is built in.
+-- JSON that does not parse, nests deeper than 100 levels, or holds more than 1000 keys and values is checked as one text after its escapes are decoded.
+-- An xml or +xml body gets one XML rule in waf-ban.lua instead, because Atom and SOAP tags such as <link> and attributes such as online= match the query XSS rules; a text/plain or untyped body is checked as JSON or XML when it starts with {, [, or <.
 -- It reads up to 128 KB, where every query rule stays clear of the PCRE match limit even without PCRE JIT; 1 MB values hit that limit.
--- A larger urlencoded or JSON body, or a urlencoded or multipart body with more than 1000 fields, gets 413, which never counts toward a ban; a larger multipart body is an upload and stays unchecked.
+-- A larger urlencoded, JSON, or XML body, or a urlencoded or multipart body with more than 1000 fields, gets 413, which never counts toward a ban; a larger multipart body is an upload and a larger text/plain body stays unchecked.
 -- false only logs "Would block (log only) Request body prohibited" for 7 days of tuning; true answers a hit with 403, which counts toward a ban.
 localized_global.WAF_body_block = false
 -- Lua patterns for $uri, the decoded path, whose bodies stay unchecked, because editors save posts there and HTML or SQL words are normal content.
@@ -442,11 +443,11 @@ localized_global.WAF_body_skip = {
 	"^/wp%-json/wp/v2/",
 }
 
--- waf-ban.lua also checks each Cookie value, URL-decoded as PHP decodes it, with WAF_query_string_Request_table; upstream never reads this setting.
--- Cookies carry tokens, base64, and JSON, and a JSON cookie such as {"color":"#ffffff"} already matches the SQLi comment rule, so false only logs "Would block (log only) Request cookie prohibited" for 7 days of tuning, like the body check.
+-- waf-ban.lua also checks each Cookie name and value, URL-decoded as PHP decodes them, with WAF_query_string_Request_table; upstream never reads this setting.
+-- Cookies carry tokens, base64, and JSON, so false only logs "Would block (log only) Request cookie prohibited" for 7 days of tuning, like the body check.
 -- true answers a hit with 403, which counts toward a ban.
 localized_global.WAF_cookie_block = false
--- Lua patterns for cookie names whose values waf-ban.lua does not check, because they carry opaque tokens; upstream never reads this setting.
+-- Lua patterns for cookie names that waf-ban.lua does not check, name and value, because they carry opaque tokens; upstream never reads this setting.
 -- sl-session is the base64 session token of a SafeLine front proxy.
 localized_global.WAF_cookie_skip = { "^sl%-session$" }
 

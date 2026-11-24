@@ -167,16 +167,19 @@ Upstream checks only the query values.
 `waf-ban.lua` uses the query value rules on more parts of the request:
 
 - The name of each query argument. A hit gets `403`.
-- Each cookie value, after `waf-ban.lua` decodes it as PHP does.
+- Each cookie name and value, after `waf-ban.lua` decodes them as PHP does.
   With `WAF_cookie_block = false`, a hit only writes a `Would block (log only)` line, because cookies often carry JSON or tokens.
-  `WAF_cookie_skip` lists the cookie names whose values are not checked, for example the `sl-session` token of a SafeLine proxy.
+  `WAF_cookie_skip` lists the cookie names that are not checked, for example the `sl-session` token of a SafeLine proxy.
 - The request body, up to 128 KB:
     - each urlencoded field
     - each multipart field that is not a file
-    - each JSON value, with the rules for its object key; JSON that does not parse, or that nests deeper than 100 levels or holds more than 1000 values, as one text
+    - each JSON object key and each JSON value, with the rules for its object key; JSON that does not parse, or that nests deeper than 100 levels or holds more than 1000 keys and values, as one text
+    - an XML body (`xml` or `+xml` type, such as SWORDv2 Atom or SOAP), with one XML rule instead of the query rules: a `DOCTYPE` or `ENTITY` declaration (XXE), XInclude, XSLT, a Java `XMLDecoder` object, a PHP tag, a `<script>` tag, a Log4Shell lookup, or Java template injection
+    - a `text/plain` body or a body without a type, as JSON when it starts with `{` or `[`, and as XML when it starts with `<`; other text is not checked
 
 A urlencoded or multipart body with more than 1000 fields gets `413`.
-A urlencoded or JSON body larger than 128 KB also gets `413`.
+A urlencoded, JSON, or XML body larger than 128 KB also gets `413`.
+A `text/plain` body larger than 128 KB is not checked.
 A multipart body larger than 128 KB is an upload, and `waf-ban.lua` does not check it.
 
 With `WAF_body_block = false`, a body hit only writes a `Would block (log only)` line to the error log.
