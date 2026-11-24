@@ -69,6 +69,7 @@ UNITS = [
     b"sleep/***",
     b"1/***/or/***/",
     b";drop ",
+    b"/uploaded_files/",
 ]
 ALPHABET = b"a'\"<>=(){}$:;|&/.-_ 01on\n%,"
 CANARY = rb"^(?i)(?s).*\$\{(?:jndi|[^}]*:[^}]*\}).*$"

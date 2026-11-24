@@ -74,14 +74,34 @@ localized_global.WAF_URI_Request_table = {
 		"^.*$",
 		[[composer\.lock]],
 	},
-	-- Upload directories of WordPress (wp-content/uploads) and SLiMS (files, repository, images/docs, images/persons): a script there can only be an uploaded webshell.
+	-- Upload directories of WordPress (wp-content/uploads), INLISLite (uploaded_files), and SLiMS (files, repository, images/docs, images/persons): a script there can only be an uploaded webshell.
 	-- Only SLiMS's two image upload directories count, because themes keep scripts such as timthumb.php under other images/ directories.
 	-- Upstream never reads upload bodies, so this rule keeps such a file from running, with double extensions such as shell.php.jpg, path info such as x.jpg/y.php, and Tomcat's shell.jsp;.png.
 	-- The extension must end the path or be followed by . ; / or %, so names such as report.plan.pdf pass; % stays last in the class, because upstream turns %. into ".".
 	-- ^(?>...) locks the first upload directory, so a path that repeats it stays a linear scan.
 	{
 		"^.*$",
-		[[^(?>.*?(?:wp-content/uploads|/repository|/files|/images/(?:docs|persons))/).*?\.(?:php\d?|phtml|phar|jspx?|aspx?|cgi|pl|sh)(?:[./;%]|$)]],
+		[[^(?>.*?(?:wp-content/uploads|/uploaded_files|/repository|/files|/images/(?:docs|persons))/).*?\.(?:php\d?|pht(?:ml)?|phar|jspx?|aspx?|cgi|pl|sh)(?:[./;%]|$)]],
+	},
+	-- SLiMS: database backups that the admin backup module writes under files/backup.
+	{
+		"^.*$",
+		"/files/backup(?:[/;]|$)",
+	},
+	-- Yii2 (INLISLite): local config files with database credentials and cookie validation keys, also as editor backups such as main-local.php~.
+	{
+		"^.*$",
+		[[(?:main|params)-local\.php]],
+	},
+	-- Yii2 and Laravel application logs, which expose paths, SQL, and session data.
+	{
+		"^.*$",
+		"/(?:runtime|storage)/logs/",
+	},
+	-- Yii2's Gii code generator, which writes PHP files when it is left enabled.
+	{
+		"^.*$",
+		"/gii(?:[/;]|$)",
 	},
 	{
 		"^.*$",
