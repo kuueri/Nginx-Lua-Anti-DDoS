@@ -12,13 +12,14 @@ Prints PASS and exits 0, or one FAIL line per failure and exits 1.
 import ctypes
 import os
 import random
+import re
 import subprocess
 import sys
 import time
 
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 LIMIT_MS = 250
-SIZES = {"uri": 8192, "query": 131072, "header": 8192}
+SIZES = {"uri": 8192, "query": 131072, "header": 8192, "xml": 131072}
 UNITS = [
     b"a",
     b"'",
@@ -72,6 +73,12 @@ UNITS = [
     b"/uploaded_files/",
     b"${(",
     b"getClass().",
+    b"<java ",
+    b"<object ",
+    b"<ns:include ",
+    b"<!doctype ",
+    b"<script",
+    b"<#assign",
 ]
 ALPHABET = b"a'\"<>=(){}$:;|&/.-_ 01on\n%,"
 CANARY = rb"^(?i)(?s).*\$\{(?:jndi|[^}]*:[^}]*\}).*$"
@@ -124,7 +131,7 @@ lib.pcre2_match_8.argtypes = [
 
 
 def rules():
-    """Return (kind, index, pattern, size) for every URI, query, and header rule."""
+    """Return (kind, index, pattern, size) for every URI, query, header, and XML rule."""
     out = subprocess.run(
         ["lua", "-e", CHUNK], cwd=ROOT, check=True, capture_output=True
     ).stdout.decode()
@@ -132,6 +139,11 @@ def rules():
     for line in out.splitlines():
         kind, index, pattern = line.split("\t")
         result.append((kind, int(index), bytes.fromhex(pattern), SIZES[kind]))
+    with open(os.path.join(ROOT, "config", "waf-ban.lua"), encoding="utf-8") as f:
+        match = re.search(r"local\s+XML_RULE\s*=\s*\[\[(.*?)\]\]", f.read(), re.S)
+    if not match:
+        raise ValueError("XML_RULE not found in config/waf-ban.lua")
+    result.append(("xml", 1, match.group(1).encode("latin1"), SIZES["xml"]))
     return result
 
 
