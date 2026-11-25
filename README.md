@@ -230,19 +230,26 @@ ssh user@server 'curl -s http://127.0.0.1:9180/ddos_stats' | jq
 
 The stats endpoint disables the rewrite and access WAF handlers, so polling it does not affect counters.
 
-| Field                   | Meaning                                                |
-| ----------------------- | ------------------------------------------------------ |
-| `total_traffic_allowed` | Allowed requests in the current upstream window        |
-| `total_traffic_blocked` | Blocked requests in the current upstream window        |
-| `requests_blocked`      | Addresses currently blocked by upstream                |
-| `requests_per_ip`       | Active request count per address in the current window |
-| `js_puzzle_per_ip`      | Failed JavaScript challenges per address               |
-| `blocked_ips_ttl`       | Remaining seconds for each upstream ban                |
-| `waf_bans`              | Active bans currently stored in `waf_bans`             |
-| `keys_listed`           | Number of keys read from `antiddos` (capped at 10,000) |
+| Field                       | Meaning                                                                                                                   |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `total_traffic_allowed`     | Allowed requests in the current upstream window                                                                           |
+| `total_traffic_blocked`     | Blocked requests in the current upstream window                                                                           |
+| `requests_blocked`          | Addresses currently blocked by upstream                                                                                   |
+| `requests_per_ip`           | Active request count per address in the current window                                                                    |
+| `js_puzzle_per_ip`          | Failed JavaScript challenges per address                                                                                  |
+| `blocked_ips_ttl`           | Remaining seconds for each upstream ban                                                                                   |
+| `waf_bans`                  | Active bans currently stored in `waf_bans`                                                                                |
+| `waf_attacks_total`         | Persistent total of blocked WAF attack requests                                                                           |
+| `waf_bans_total`            | Persistent total of exponential IP bans issued                                                                            |
+| `waf_banned_requests_total` | Persistent total of requests rejected by active IP bans                                                                   |
+| `waf_attacks_by_type`       | Persistent attack counts by category (`sqli`, `xss`, `cmdi`, `lfi`, `ssrf`, `rce`, `xxe`, `scanner`, `protocol`, `other`) |
+| `keys_listed`               | Number of keys read from `antiddos` (capped at 10,000)                                                                    |
 
 Key scans cap at 10,000 entries to bound shared-dict lock time.
 The script serializes JSON directly so the module build does not depend on `cjson`.
+Counters in `waf_stats` stay in shared memory on the request path with zero disk I/O.
+Worker 0 saves changed counters atomically to `/var/lib/nginx/waf/stats.txt` every 30 seconds and on graceful shutdown.
+On startup, worker 0 restores those totals without overwriting live values during a reload.
 
 ### JavaScript challenge
 

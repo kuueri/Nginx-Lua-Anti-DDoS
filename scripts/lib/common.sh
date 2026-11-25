@@ -239,6 +239,31 @@ hook_is_safe() {
 	return 1
 }
 
+ensure_stats_dir() {
+	local parent="$ROOT/var/lib/nginx" dir="$ROOT/var/lib/nginx/waf" conf="${1:-}" user="" u
+	install -d -m 0755 "$parent"
+	install -d -m 0700 "$dir"
+	if [ -z "$ROOT" ]; then
+		if [ -n "$conf" ]; then
+			user="$(sed -nE 's/^[[:space:]]*user[[:space:]]+([^;[:space:]]+).*/\1/p' <<<"$conf" | head -n 1)"
+		fi
+		if [ -z "$user" ]; then
+			for u in nginx www-data; do
+				if id -u "$u" >/dev/null 2>&1; then
+					user="$u"
+					break
+				fi
+			done
+		fi
+		if [ -n "$user" ] && id -u "$user" >/dev/null 2>&1; then
+			chown "$user" "$dir"
+		fi
+		if command -v restorecon >/dev/null; then
+			restorecon -RF "$parent" || warn "restorecon failed on $parent (continuing)"
+		fi
+	fi
+}
+
 # Download upstream waf.lua, reapply config/, and reload nginx only when a file changed.
 # A failed nginx -t puts every file back.
 sync_waf() {
@@ -286,6 +311,7 @@ sync_waf() {
 		cmp -s "$stage/$f" "$ROOT/$f" || changed=1
 	done
 	if [ "$changed" -eq 0 ]; then
+		[ -d "$ROOT/var/lib/nginx/waf" ] || ensure_stats_dir
 		info "WAF already up to date; nothing to do"
 		return 0
 	fi
@@ -322,7 +348,7 @@ sync_waf() {
 		info "Adding 'include /$HTTP_CONF;' to the http block of $main_conf"
 		copy "$main_conf" "$BACKUP_DIR/nginx.conf"
 		# A manual setup may hold waf.conf's directives inline, and nginx -t fails on a second lua_shared_dict, so the include replaces them.
-		sed -i -E '/^[[:space:]]*(lua_shared_dict[[:space:]]+(antiddos|antiddos_blocked|ddos_counter|jspuzzle_tracker|waf_strikes|waf_bans)[[:space:]]|init_by_lua_file[[:space:]]+\/etc\/nginx\/lua\/waf-local-overrides\.lua;|(access|rewrite|log)_by_lua_file[[:space:]]+\/etc\/nginx\/lua\/waf(-ban)?\.lua;)/d' "$main_conf"
+		sed -i -E '/^[[:space:]]*(lua_shared_dict[[:space:]]+(antiddos|antiddos_blocked|ddos_counter|jspuzzle_tracker|waf_strikes|waf_bans|waf_stats)[[:space:]]|init_by_lua_file[[:space:]]+\/etc\/nginx\/lua\/waf-local-overrides\.lua;|init_worker_by_lua_file[[:space:]]+\/etc\/nginx\/lua\/waf-stats\.lua;|(access|rewrite|log)_by_lua_file[[:space:]]+\/etc\/nginx\/lua\/waf(-ban)?\.lua;)/d' "$main_conf"
 		# After lua_package_path when the module setup added one, so the Lua path stays first in the http block.
 		if grep -qE '^[[:space:]]*lua_package_path[[:space:]]' "$main_conf"; then
 			sed -i -E "0,/^[[:space:]]*lua_package_path[[:space:]].*$/s##&\n    include /$HTTP_CONF;#" "$main_conf"
@@ -336,6 +362,7 @@ sync_waf() {
 		fi
 	fi
 
+	ensure_stats_dir "$conf"
 	info "Reloading nginx"
 	systemctl reload-or-restart nginx
 	info "WAF files installed; previous versions (if any) are in $BACKUP_DIR"

@@ -47,6 +47,8 @@ local function make_dict(store, hooks)
 end
 local strikes_dict = make_dict(strikes_store)
 local bans_dict = make_dict(bans_store, bans_hooks)
+local stats_store = {}
+local stats_dict = make_dict(stats_store)
 local logs_emitted = {}
 
 localized_global = {
@@ -99,7 +101,7 @@ local function start(ip, opts)
 	local ctx, exited, cleared, header = {}, nil, {}, {}
 	local function env(phase, status)
 		_G.ngx = {
-			shared = { waf_strikes = strikes_dict, waf_bans = bans_dict },
+			shared = { waf_strikes = strikes_dict, waf_bans = bans_dict, waf_stats = stats_dict },
 			var = {
 				remote_addr = ip,
 				realip_remote_addr = not opts.realip_nil and (opts.realip or ip) or nil,
@@ -175,7 +177,7 @@ local function start(ip, opts)
 					return opts.args or {}, opts.truncated == "args" and "truncated" or nil
 				end,
 				get_headers = function()
-					return {}, opts.truncated == "headers" and "truncated" or nil
+					return opts.headers or {}, opts.truncated == "headers" and "truncated" or nil
 				end,
 			},
 			ctx = ctx,
@@ -213,10 +215,17 @@ local function start(ip, opts)
 		end
 	end
 	local status = exited or opts.status or 200
-	return status, function()
-		env("log", status)
-		run()
-	end, cleared, header
+	return status,
+		function()
+			if opts.error_page_444 and status == 403 then
+				ctx = {}
+				status = 444
+			end
+			env("log", status)
+			run()
+		end,
+		cleared,
+		header
 end
 
 local function request(ip, opts)
@@ -875,6 +884,58 @@ check(
 check(
 	body({ ctype = mp, body = pdf .. part(field_q, "Teachers' and true friends") .. "--XyZ--\r\n", file = true }) == 200,
 	"real rules: a clean field after a 200 KB upload must pass"
+)
+
+for k in pairs(stats_store) do
+	stats_store[k] = nil
+end
+local function stat(k)
+	return stats_store[k] and stats_store[k].v or 0
+end
+request("198.51.100.240", { raw = "/uploaded_files/shell%2ephp", uri = "/uploaded_files/shell.php" })
+request("198.51.100.241", { ctype = "text/xml", body = '<!DOCTYPE foo [<!ENTITY x "y">]><a/>' })
+request(
+	"198.51.100.242",
+	{ ctype = "multipart/form-data; boundary=a; boundary=b", body = part(field_q, "x") .. "--a--\r\n" }
+)
+request("198.51.100.243", { ctype = json, body = [[{"q":"1 UNION SELECT 1,2"}]] })
+request("198.51.100.244", { raw = "/a/..%2fetc/passwd", uri = "/etc/passwd", status = 403 })
+request("198.51.100.245", { args = { q = "<script>alert(1)</script>" }, status = 403 })
+request("198.51.100.246", { headers = { ["User-Agent"] = "${jndi:ldap://x/a}" }, status = 403 })
+request("198.51.100.247", { headers = { ["X-Test"] = "() { :;}; id" }, status = 403 })
+request("198.51.100.248", { status = 403, site_deny = true })
+check(stat("attacks") == 9, "waf_stats must count every classified WAF attack")
+check(stat("cat:scanner") == 1, "decoded upload webshell URI must be classified as scanner")
+check(stat("cat:xxe") == 1, "XML rule hit must be classified as xxe")
+check(stat("cat:protocol") == 1, "multipart boundary error must be classified as protocol")
+check(stat("cat:sqli") == 1, "JSON SQLi hit must be classified as sqli")
+check(stat("cat:lfi") == 1, "upstream raw URI traversal 403 must be classified as lfi")
+check(stat("cat:xss") == 1, "upstream query value XSS 403 must be classified as xss")
+check(stat("cat:rce") == 1, "upstream Log4Shell header 403 must be classified as rce")
+check(stat("cat:cmdi") == 1, "upstream Shellshock header 403 must be classified as cmdi")
+check(stat("cat:other") == 1, "site deny 403 with no rule match must fall back to other")
+
+local stat_ban_ip = "198.51.100.249"
+for _ = 1, 5 do
+	request(stat_ban_ip, { args = { q = "1 union select 2" }, status = 403 })
+end
+check(stat("bans") == 1, "issuing a new ban must increment waf_stats bans once")
+check(stat("attacks") == 14 and stat("cat:sqli") == 6, "5 upstream SQLi hits must add 5 attacks and 5 sqli")
+check(request(stat_ban_ip) == 403, "banned IP must receive 403")
+check(stat("banned_requests") == 1, "request blocked by active ban must increment banned_requests")
+check(stat("attacks") == 14, "request blocked by active ban must not increment attacks again")
+
+local ep_ip = "198.51.100.250"
+for _ = 1, 3 do
+	request(ep_ip, { raw = "/.env", uri = "/.env", error_page_444 = true })
+end
+for _ = 1, 2 do
+	request(ep_ip, { args = { q = "1 union select 2" }, status = 403, error_page_444 = true })
+end
+check(request(ep_ip) == 403, "error_page 403 -> 444 wiping ngx.ctx must still record strikes and ban")
+check(
+	stat("bans") == 2 and stat("cat:scanner") == 4 and stat("cat:sqli") == 8,
+	"error_page 403 -> 444 must still record stats and categories"
 )
 perl_in:close()
 perl_out:close()

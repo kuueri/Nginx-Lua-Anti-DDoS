@@ -17,8 +17,26 @@ if not cache then
 end
 
 if phase == "access" then
+	if ngx.exit ~= cache.wrapped_exit then
+		local orig_exit = ngx.exit
+		cache.wrapped_exit = function(code)
+			if code == ngx.HTTP_FORBIDDEN and ngx.ctx.waf_in_upstream then
+				ngx.ctx.waf_in_upstream = nil
+				ngx.ctx.waf_recorded = true
+				if cache.lib then
+					cache.lib.record_hit(nil)
+				end
+			end
+			return orig_exit(code)
+		end
+		ngx.exit = cache.wrapped_exit
+	end
 	cache.upstream = cache.upstream or assert(loadfile("/etc/nginx/lua/waf.lua"))
+	if ngx.ctx.waf_ban_checked then
+		ngx.ctx.waf_in_upstream = true
+	end
 	cache.upstream()
+	ngx.ctx.waf_in_upstream = nil
 	ngx.ctx.waf_access_passed = true
 	return
 end
@@ -27,6 +45,7 @@ if phase == "log" then
 	if
 		not ngx.ctx.waf_ban_checked
 		or ngx.ctx.waf_access_passed
+		or ngx.ctx.waf_recorded
 		or ngx.status ~= ngx.HTTP_FORBIDDEN
 		or ngx.var.upstream_status
 	then
@@ -36,7 +55,11 @@ end
 
 local ip = ngx.var.remote_addr
 local bans = ngx.shared.waf_bans
+local stats = ngx.shared.waf_stats
 if phase == "rewrite" and bans:get("ban:" .. ip) then
+	if stats then
+		stats:incr("banned_requests", 1, 0)
+	end
 	return ngx.exit(ngx.HTTP_FORBIDDEN)
 end
 
@@ -86,11 +109,32 @@ if not lib then
 			local out = {}
 			for i, rule in ipairs(rules) do
 				local key = rule[1]:gsub("[%^%$]", "")
-				out[i] = { key == ".*" or key == "(?s).*", "^(?i)" .. key .. "$", prefix .. rule[2] .. suffix }
+				out[i] = {
+					key == ".*" or key == "(?s).*",
+					"^(?i)" .. key .. "$",
+					prefix .. rule[2] .. suffix,
+					rule[3] or "other",
+				}
 			end
 			cache[name], cache[name .. " compiled"] = rules, out
 		end
 		return cache[name .. " compiled"]
+	end
+
+	local function compiled_headers()
+		local rules = localized_global.WAF_Header_Request_table
+		if not rules then
+			return {}
+		end
+		if cache.headers ~= rules then
+			local out = {}
+			for i, rule in ipairs(rules) do
+				local clean = rule[1]:gsub("[%^%$]", "")
+				out[i] = { rule[1], clean, rule[2], rule[3] or "other" }
+			end
+			cache.headers, cache.headers_compiled = rules, out
+		end
+		return cache.headers_compiled
 	end
 
 	local function find(list, ua)
@@ -341,9 +385,110 @@ if not lib then
 					local from, _, err = ngx.re.find(field[2], rule[3], "jo")
 					if from or err then
 						local name = field[1]:sub(1, 64):gsub("%c", "?")
-						return name .. ", WAF_query_string_Request_table rule " .. i .. (err and ", " .. err or "")
+						return name .. ", WAF_query_string_Request_table rule " .. i .. (err and ", " .. err or ""),
+							rule[4]
 					end
 				end
+			end
+		end
+	end
+
+	local function classify_upstream()
+		local raw_uri = ngx.var.request_uri or ""
+		local q_pos = raw_uri:find("?", 1, true)
+		local raw_path = q_pos and raw_uri:sub(1, q_pos - 1) or raw_uri
+		if raw_path ~= "" and raw_path ~= "/" then
+			local url = (ngx.var.scheme or "http") .. "://" .. (ngx.var.host or "") .. raw_uri
+			for _, rule in ipairs(compiled("WAF_URI_Request_table", "(?i)", "")) do
+				if (rule[1] or ngx.re.find(url, rule[2], "jo")) and ngx.re.find(raw_path, rule[3], "jo") then
+					return rule[4]
+				end
+			end
+		end
+		local args = ngx.req.get_uri_args()
+		if args and next(args) ~= nil then
+			local fields = {}
+			for name, values in pairs(args) do
+				if type(values) == "table" then
+					for _, v in ipairs(values) do
+						fields[#fields + 1] = { name, tostring(v) }
+					end
+				else
+					fields[#fields + 1] = { name, tostring(values) }
+				end
+			end
+			local _, cat = rule_hit(fields)
+			if cat then
+				return cat
+			end
+		end
+		local headers = ngx.req.get_headers()
+		if headers and next(headers) ~= nil then
+			for name, values in pairs(headers) do
+				local k = tostring(name):lower()
+				local list = type(values) == "table" and values or { values }
+				for _, rule in ipairs(compiled_headers()) do
+					if k == rule[2] or k == rule[1] or ngx.re.find(k, rule[1], "jo") then
+						for _, v in ipairs(list) do
+							if ngx.re.find(tostring(v), rule[3], "jo") then
+								return rule[4]
+							end
+						end
+					end
+				end
+			end
+		end
+		return "other"
+	end
+
+	local function record_hit(cat)
+		local addr = ngx.var.remote_addr
+		local ban_dict = ngx.shared.waf_bans
+		if is_private(addr) or ban_dict:get("ban:" .. addr) then
+			return
+		end
+		local stat_dict = ngx.shared.waf_stats
+		if stat_dict then
+			local kind = cat or classify_upstream()
+			stat_dict:incr("attacks", 1, 0)
+			stat_dict:incr("cat:" .. kind, 1, 0)
+		end
+		local ua = (ngx.var.http_user_agent or ""):lower()
+		local crawler = find(AI_AGENTS, ua) or find(CRAWLERS, ua)
+		local strike_dict = ngx.shared.waf_strikes
+		local key = (crawler and "crawl:" or "hit:") .. addr
+		local hits = strike_dict:incr(key, 1, 0, crawler and CRAWLER_WINDOW or WINDOW)
+		if hits and hits >= (crawler and CRAWLER_LIMIT or LIMIT) then
+			local ok, err = ban_dict:add("ban:" .. addr, true, BAN)
+			if ok then
+				if stat_dict then
+					stat_dict:incr("bans", 1, 0)
+				end
+				local n = ban_dict:incr("bans:" .. addr, 1, 0, BAN_HISTORY_TTL) or 1
+				local ban = BAN * 2 ^ (math.min(n, 10) - 1)
+				if ban > BAN then
+					local set_ok, set_err = ban_dict:set("ban:" .. addr, true, ban)
+					if not set_ok then
+						ngx.log(ngx.ERR, "[WAF ban] failed to extend ban for ", addr, ": ", set_err)
+					end
+				end
+				ban_dict:set("bans:" .. addr, n, ban + BAN_HISTORY_TTL)
+				strike_dict:delete("hit:" .. addr)
+				strike_dict:delete("crawl:" .. addr)
+				ngx.log(
+					ngx.WARN,
+					"[WAF ban] ",
+					addr,
+					" banned for ",
+					ban,
+					" s (ban ",
+					n,
+					") after ",
+					hits,
+					" blocked requests"
+				)
+			elseif err ~= "exists" then
+				ngx.log(ngx.ERR, "[WAF ban] failed to ban ", addr, ": ", err)
 			end
 		end
 	end
@@ -437,9 +582,9 @@ if not lib then
 				f:close()
 			end
 			if not boundary then
-				return ngx.HTTP_FORBIDDEN, err
+				return ngx.HTTP_FORBIDDEN, err, "protocol"
 			elseif not fields then
-				return parts, err
+				return parts, err, parts == ngx.HTTP_FORBIDDEN and "protocol" or nil
 			elseif parts == 0 then
 				if #body > BODY_LIMIT then
 					return 413, "no multipart part in over " .. BODY_LIMIT .. " bytes"
@@ -463,7 +608,7 @@ if not lib then
 			if kind == "xml" then
 				local hit, _, err = ngx.re.find(body, XML_RULE, "jo")
 				if hit or err then
-					return ngx.HTTP_FORBIDDEN, "XML rule" .. (err and ", " .. err or "")
+					return ngx.HTTP_FORBIDDEN, "XML rule" .. (err and ", " .. err or ""), "xxe"
 				end
 				return
 			elseif kind == "form" then
@@ -483,19 +628,19 @@ if not lib then
 		for k = 1, #fields do
 			fields[#fields + 1] = { fields[k][1], fields[k][1] }
 		end
-		local reason = rule_hit(fields)
+		local reason, cat = rule_hit(fields)
 		if reason then
-			return ngx.HTTP_FORBIDDEN, "field " .. reason
+			return ngx.HTTP_FORBIDDEN, "field " .. reason, cat
 		end
 	end
 
 	lib = {
 		ai_agents = AI_AGENTS,
-		crawlers = CRAWLERS,
 		is_private = is_private,
 		compiled = compiled,
 		find = find,
 		rule_hit = rule_hit,
+		record_hit = record_hit,
 		log_hit = log_hit,
 		cookie_fields = cookie_fields,
 		body_hit = body_hit,
@@ -539,6 +684,8 @@ if phase == "rewrite" then
 				err and ", " .. err or "",
 				")"
 			)
+			ngx.ctx.waf_recorded = true
+			lib.record_hit(rule[4])
 			return ngx.exit(ngx.HTTP_FORBIDDEN)
 		end
 	end
@@ -555,52 +702,35 @@ if phase == "rewrite" then
 	for name in pairs(args) do
 		names[#names + 1] = { name, name }
 	end
-	local reason = lib.rule_hit(names)
+	local reason, cat = lib.rule_hit(names)
 	if reason then
 		lib.log_hit("argument name", true, reason)
+		ngx.ctx.waf_recorded = true
+		lib.record_hit(cat)
 		return ngx.exit(ngx.HTTP_FORBIDDEN)
 	end
-	reason = lib.rule_hit(lib.cookie_fields())
+	reason, cat = lib.rule_hit(lib.cookie_fields())
 	if reason then
 		lib.log_hit("cookie", localized_global.WAF_cookie_block, reason)
 		if localized_global.WAF_cookie_block then
+			ngx.ctx.waf_recorded = true
+			lib.record_hit(cat)
 			return ngx.exit(ngx.HTTP_FORBIDDEN)
 		end
 	end
 	local status
-	status, reason = lib.body_hit(uri)
+	status, reason, cat = lib.body_hit(uri)
 	if status then
 		lib.log_hit("body", localized_global.WAF_body_block, reason)
 		if localized_global.WAF_body_block then
+			if status == ngx.HTTP_FORBIDDEN then
+				ngx.ctx.waf_recorded = true
+				lib.record_hit(cat)
+			end
 			return ngx.exit(status)
 		end
 	end
 	return
 end
 
-if lib.is_private(ip) or bans:get("ban:" .. ip) then
-	return
-end
-local ua = (ngx.var.http_user_agent or ""):lower()
-local crawler = lib.find(lib.ai_agents, ua) or lib.find(lib.crawlers, ua)
-local key = (crawler and "crawl:" or "hit:") .. ip
-local hits = strikes:incr(key, 1, 0, crawler and CRAWLER_WINDOW or WINDOW)
-if hits and hits >= (crawler and CRAWLER_LIMIT or LIMIT) then
-	local ok, err = bans:add("ban:" .. ip, true, BAN)
-	if ok then
-		local n = bans:incr("bans:" .. ip, 1, 0, BAN_HISTORY_TTL) or 1
-		local ban = BAN * 2 ^ (math.min(n, 10) - 1)
-		if ban > BAN then
-			local set_ok, set_err = bans:set("ban:" .. ip, true, ban)
-			if not set_ok then
-				ngx.log(ngx.ERR, "[WAF ban] failed to extend ban for ", ip, ": ", set_err)
-			end
-		end
-		bans:set("bans:" .. ip, n, ban + BAN_HISTORY_TTL)
-		strikes:delete("hit:" .. ip)
-		strikes:delete("crawl:" .. ip)
-		ngx.log(ngx.WARN, "[WAF ban] ", ip, " banned for ", ban, " s (ban ", n, ") after ", hits, " blocked requests")
-	elseif err ~= "exists" then
-		ngx.log(ngx.ERR, "[WAF ban] failed to ban ", ip, ": ", err)
-	end
-end
+lib.record_hit(nil)

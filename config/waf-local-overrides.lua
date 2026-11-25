@@ -42,37 +42,45 @@ localized_global.WAF_URI_Request_table = {
 	{
 		"^.*$",
 		[[\.htaccess]],
+		"scanner",
 	},
 	-- Also covers wp-config.php and WordPress setup-config.php.
 	{
 		"^.*$",
 		[[config\.php]],
+		"scanner",
 	},
 	{
 		"^.*$",
 		[[configuration\.php]],
+		"scanner",
 	},
 	-- Also blocks the CSS/JS that Autoptimize and W3 Total Cache serve from /wp-content/cache/, so drop it on sites that use them.
 	-- The trailing slash lets page slugs that start with "cache" through.
 	{
 		"^.*$",
 		"/cache/",
+		"scanner",
 	},
 	{
 		"^.*$",
 		[[\.env]],
+		"scanner",
 	},
 	{
 		"^.*$",
 		[[/\.git]],
+		"scanner",
 	},
 	{
 		"^.*$",
 		[[composer\.json]],
+		"scanner",
 	},
 	{
 		"^.*$",
 		[[composer\.lock]],
+		"scanner",
 	},
 	-- Upload directories of WordPress (wp-content/uploads), INLISLite (uploaded_files), and SLiMS (files, repository, images/docs, images/persons): a script there can only be an uploaded webshell.
 	-- Only SLiMS's two image upload directories count, because themes keep scripts such as timthumb.php under other images/ directories.
@@ -82,107 +90,130 @@ localized_global.WAF_URI_Request_table = {
 	{
 		"^.*$",
 		[[^(?>.*?(?:wp-content/uploads|/uploaded_files|/repository|/files|/images/(?:docs|persons))/).*?\.(?:php\d?|pht(?:ml)?|phar|jspx?|aspx?|cgi|pl|sh)(?:[./;%]|$)]],
+		"scanner",
 	},
 	-- SLiMS: database backups that the admin backup module writes under files/backup.
 	{
 		"^.*$",
 		"/files/backup(?:[/;]|$)",
+		"scanner",
 	},
 	-- Yii2 (INLISLite): local config files with database credentials and cookie validation keys, also as editor backups such as main-local.php~.
 	{
 		"^.*$",
 		[[(?:main|params)-local\.php]],
+		"scanner",
 	},
 	-- Yii2 and Laravel application logs, which expose paths, SQL, and session data.
 	{
 		"^.*$",
 		"/(?:runtime|storage)/logs/",
+		"scanner",
 	},
 	-- Yii2's Gii code generator, which writes PHP files when it is left enabled.
 	{
 		"^.*$",
 		"/gii(?:[/;]|$)",
+		"scanner",
 	},
 	{
 		"^.*$",
 		"wp-admin/includes",
+		"scanner",
 	},
 	{
 		"^.*$",
 		[[wp-includes/.*\.php]],
+		"scanner",
 	},
 	{
 		"^.*$",
 		[[readme\.html]],
+		"scanner",
 	},
 	-- WordPress: WP_DEBUG_LOG writes here by default, exposing file paths and failed SQL queries.
 	{
 		"^.*$",
 		[[wp-content/debug\.log]],
+		"scanner",
 	},
 	{
 		"^.*$",
 		[[sysconfig.*\.inc\.php]],
+		"scanner",
 	},
 	{
 		"^.*$",
 		[[ucnode\.inc\.php]],
+		"scanner",
 	},
 	-- Installer directory or script only, so content paths such as /installing-slims/ still pass.
 	-- These directory rules also match the bare name at the end of the path or before ";", because Tomcat drops ";x" and serves /jolokia;x as /jolokia, while /solar-energy/ still passes.
 	{
 		"^.*$",
 		[[/install(?:[/.;]|$)]],
+		"scanner",
 	},
 	{
 		"^.*$",
 		"/upgrade(?:[/;]|$)",
+		"scanner",
 	},
 	{
 		"^.*$",
 		"/solr(?:[/;]|$)",
+		"scanner",
 	},
 	{
 		"^.*$",
 		"/jolokia(?:[/;]|$)",
+		"scanner",
 	},
 	{
 		"^.*$",
 		"/manager(?:[/;]|$)",
+		"scanner",
 	},
 	{
 		"^.*$",
 		"/host-manager(?:[/;]|$)",
+		"scanner",
 	},
 	-- WordPress: xmlrpc.php (DDoS pingback amplification + login brute-force)
 	-- Jetpack talks to WordPress.com through xmlrpc.php, so drop this rule on sites that use it.
 	{
 		"^.*$",
 		[[xmlrpc\.php]],
+		"scanner",
 	},
 	-- SLiMS: database credential file
 	{
 		"^.*$",
 		[[database\.php]],
+		"scanner",
 	},
 	-- Java/DSpace: servlet internals must never be web-served
 	{
 		"^.*$",
 		"/WEB-INF(?:[/;]|$)",
+		"scanner",
 	},
 	{
 		"^.*$",
 		"/META-INF(?:[/;]|$)",
+		"scanner",
 	},
 	-- Spring Boot / DSpace: management endpoints must not be public
 	{
 		"^.*$",
 		"/actuator(?:[/;]|$)",
+		"scanner",
 	},
 	-- Generic path traversal on the raw (un-normalized) URI, also with %2e for a dot and %2f, %5c, or \ for the slash, which a backend that gets the raw path decodes.
 	{
 		"^.*$",
 		[[(?:\.|%2e){2}(?:/|%2f|%5c|\\)]],
+		"lfi",
 	},
 	-- Tomcat drops ";params" from every path segment and resolves "..;" as "..", while nginx does neither.
 	-- So /xmlui/..;/manager/html or /manager;x/html reach Tomcat paths that the rules above and nginx locations never see.
@@ -190,6 +221,7 @@ localized_global.WAF_URI_Request_table = {
 	{
 		"^.*$",
 		";.*/",
+		"lfi",
 	},
 }
 
@@ -205,6 +237,7 @@ localized_global.WAF_query_string_Request_table = {
 	{
 		"(?s).*",
 		[[(?s)(?>.*?(?<![a-z_])union(?![a-z0-9_])).*(?<![a-z_])select(?![a-z0-9_]).*]],
+		"sqli",
 	},
 	-- SQLi, boolean tautology such as ' or '1'='1 or 1 and 1=1.
 	-- The operator must be followed by a quote or digit, so titles such as "Teachers' and students' perceptions" pass.
@@ -215,6 +248,7 @@ localized_global.WAF_query_string_Request_table = {
 	{
 		"(?s).*",
 		[[(?s)(?:(?>.*?['"\d)](?:\s|/\*[^*]*+\*+/)*+(?:(?:or|and|xor)(?![a-z0-9_])|\|\||&&)(?:\s|/\*[^*]*+\*+/)*+(?:\((?:\s|/\*[^*]*+\*+/)*+)*+(?:[+-]?['"\d]|![\s(]*\d)).*(?:[=<>]|(?<![a-z0-9_])(?:(?:like|rlike|regexp|between)(?![a-z0-9_])|in(?:\s|/\*[^*]*+\*+/)*+\())|.*['"\d)](?:\s|/\*[^*]*+\*+/)*+(?:or|and|xor)(?:\s|/\*[^*]*+\*+/)++(?:not(?:\s|/\*[^*]*+\*+/)++)?(?:true|false)(?:\s|/\*[^*]*+\*+/)*+(?:$|['");]|--|#|/\*|(?:and|or|xor)(?![a-z0-9_])|\|\||&&)).*]],
+		"sqli",
 	},
 	-- SQLi, a whole value that is a numeric tautology without a comparison, such as 1 or 1, 1 or true, or 1 || 1, optionally ending in a comment.
 	-- Both sides must hold the same number, so a search such as "1 or 2" passes.
@@ -222,6 +256,7 @@ localized_global.WAF_query_string_Request_table = {
 	{
 		"(?s).*",
 		[[(?s)\s*-?(\d+)(?:\s|/\*[^*]*+\*+/)*+(?:(?:or|xor|and)(?:\s|/\*[^*]*+\*+/)*+(?:-?\1|true|false)|(?:\|\||&&)(?:\s|/\*[^*]*+\*+/)*+-?\d+)\s*(?:(?:--|#|/\*).*)?]],
+		"sqli",
 	},
 	-- SQLi, time-based and error-based functions, matched only with their opening parenthesis so "sleep quality" passes.
 	-- substr, substring, and mid count only with two numeric arguments, the blind SQLi probe shape, so "Substring (computer science)" passes.
@@ -230,6 +265,7 @@ localized_global.WAF_query_string_Request_table = {
 	{
 		"(?s).*",
 		[[(?s).*(?<![a-z_])(?:(?:sleep|pg_sleep(?:_for|_until)?|benchmark|extractvalue|updatexml|load_file|group_concat|concat|concat_ws|name_const|unhex|ifnull|make_set)(?:\s|/\*[^*]*+\*+/)*+\(|char(?:\s|/\*[^*]*+\*+/)*+\(\s*\d|(?:substr(?:ing)?|mid)(?:\s|/\*[^*]*+\*+/)*+\([^()]*,\s*\d+\s*,\s*\d+\s*\)).*]],
+		"sqli",
 	},
 	-- SQLi, a quote closed by a comment or terminator, such as admin'-- or admin'#.
 	-- After a double quote, # followed by 3 to 8 hex digits and a quote is a JSON color such as {"color":"#ffffff"}, and ";" must end the value or start a comment or SQL statement.
@@ -237,30 +273,35 @@ localized_global.WAF_query_string_Request_table = {
 	{
 		"(?s).*",
 		[[(?s)(?!([0-9a-f]{64})?s:\d+:".*";$).*(?:'\s*(?:--(?:\s|$)|#|/\*|;)|"\s*(?:--(?:\s|$)|/\*|#(?![0-9a-f]{3,8}")|;\s*(?:$|--|#|/\*|(?:select|insert|update|delete|drop|alter|create|truncate|exec|declare|waitfor|set)\b))).*]],
+		"sqli",
 	},
 	-- SQLi, column counting with ORDER BY n closed by a comment or terminator, such as subject' ORDER BY 1-- -, which sqlmap sent to DSpace on 2026-11-18.
 	-- The comment must follow, so a search such as "Law and order by 1998 standards" passes.
 	{
 		"(?s).*",
 		[[(?s).*(?<![a-z_])order(?:\s|/\*[^*]*+\*+/)++by(?:\s|/\*[^*]*+\*+/)++\d+(?:\s*,\s*\d+)*+(?:\s|/\*[^*]*+\*+/)*+(?:--|#|/\*|;).*]],
+		"sqli",
 	},
 	-- SQLi, subquery.
 	-- An inline comment counts as a space, and MySQL runs the body of a versioned comment, so (/*!50000SELECT*/1) and (/*!50000 SELECT*/1) open a subquery too.
 	{
 		"(?s).*",
 		[[(?s).*\((?:(?:\s|/\*[^*]*+\*+/)*+select|\s*+/\*!\d*+\s*+select)(?![a-z0-9_]).*]],
+		"sqli",
 	},
 	-- SQLi, schema probing and file access.
 	-- An inline comment counts as a space, as in INTO/**/OUTFILE or USER/**/().
 	{
 		"(?s).*",
 		[[(?s).*(?:information_schema|mysql\.user|pg_catalog|pg_shadow|sqlite_master|@@(?:version|datadir|hostname|basedir)|into(?:\s|/\*[^*]*+\*+/)+(?:out|dump)file|(?<![a-z_])(?:version|database|user|current_user|schema)(?:\s|/\*[^*]*+\*+/)*+\(\s*\)|dbms_pipe|utl_http|utl_inaddr).*]],
+		"sqli",
 	},
 	-- SQLi, a stacked statement that changes data or schema after ";", such as 1; DROP TABLE user or 1; DELETE FROM eperson.
 	-- The statement needs its object, so "Section 1; drop-in tutoring hours" passes.
 	{
 		"(?s).*",
 		[[(?s).*;\s*(?:(?:drop|alter|truncate)(?:\s|/\*[^*]*+\*+/)++(?:table|database|schema|user|view|index)\b|delete(?:\s|/\*[^*]*+\*+/)++from(?:\s|/\*[^*]*+\*+/)++\w|insert(?:\s|/\*[^*]*+\*+/)++into(?:\s|/\*[^*]*+\*+/)++\w|update(?:\s|/\*[^*]*+\*+/)++\w+(?:\s|/\*[^*]*+\*+/)++set(?:\s|/\*[^*]*+\*+/)++\w).*]],
+		"sqli",
 	},
 	-- SQLi through sort parameters, a common WordPress plugin hole: only word characters, spaces, comma, dot, and dash pass.
 	-- The name is grouped because upstream wraps it as ^(?i)<name>$.
@@ -268,21 +309,25 @@ localized_global.WAF_query_string_Request_table = {
 	{
 		[[\s*(?:order|sort)(?:[\s._]?by)?]],
 		[[(?s).*[^\w\s,.-].*]],
+		"sqli",
 	},
 	{
 		"(?s).*",
 		[[(?s).*base64_(?:en|de)code.*]],
+		"rce",
 	},
 	-- PHP stream wrappers that include(), file_get_contents(), or fopen() open: code, archives, commands, and compressed files.
 	{
 		"(?s).*",
 		[[(?s).*(?:php|data|zip|expect|glob|compress\.(?:zlib|bzip2))://.*]],
+		"lfi",
 	},
 	-- Also covers the documented CVE-2025-55752 request shape, ?param=../WEB-INF/web.xml.
 	-- A backslash separates path parts on Windows and in Java's File, and %2e or %2f left in a decoded value means an app decodes it a second time.
 	{
 		"(?s).*",
 		[[(?s).*(?:\.|%2e){2}(?:[/\\]|%2f|%5c).*]],
+		"lfi",
 	},
 	-- Local file inclusion by absolute path, because include() and file_get_contents() open /etc/passwd without any ../.
 	-- The list holds the OS files that CRS rule 930120 (lfi-os-files.data) sees probed most.
@@ -290,6 +335,7 @@ localized_global.WAF_query_string_Request_table = {
 	{
 		"(?s).*",
 		[[(?s)(?:(?:.*/)?etc/(?:\.?/)*+(?:passwd|shadow|group|hosts)(?![a-z])|.*(?:/proc/self/|win\.ini|boot\.ini)).*]],
+		"lfi",
 	},
 	-- Log4Shell (CVE-2021-44228, Log4j 2.x): ${jndi:...} and obfuscated ${...:...} lookups
 	-- A ${...} without ":" before its "}" is skipped whole and possessively, which suffices because a ${ nested inside it has no ":" before that "}" either.
@@ -297,12 +343,14 @@ localized_global.WAF_query_string_Request_table = {
 	{
 		"(?s).*",
 		[[(?s)(?:.*\$\{jndi|(?:(?:[^$]++|\$(?!\{))*+\$\{[^}:]*+\})*+(?:[^$]++|\$(?!\{))*+\$\{[^}:]*+:[^}]*+\}).*]],
+		"rce",
 	},
 	-- The rules below, through ASP, must stay linear too: an unbounded scan nested inside another lets a long value hit the PCRE limit and pass.
 	-- XSS, a tag that runs script or loads content. Browsers need the name right after "<", so "p<0.05" and "x < y" pass.
 	{
 		"(?s).*",
 		[[(?s).*</?(?:script|iframe|frame|frameset|object|embed|applet|svg|math|img|image|video|audio|source|body|style|link|meta|base|form|input|button|textarea|select|details|marquee|isindex|template)(?![a-z0-9_-]).*]],
+		"xss",
 	},
 	-- XSS, an event handler after any tag, such as <x onclick=...>; (?>...) locks the first tag.
 	-- A quote also opens it, because a quote can close the attribute an app echoes the value into, so a handler can follow without any tag.
@@ -310,6 +358,7 @@ localized_global.WAF_query_string_Request_table = {
 	{
 		"(?s).*",
 		[[(?s)(?:.*["'\x60]on[a-z]{3,}\s*=|(?>.*?(?:<[a-z]|["'\x60])).*?[\s/"'\x60]on[a-z]{3,}\s*=).*]],
+		"xss",
 	},
 	-- XSS, a script URL at the start of a value that a page may put into href or src.
 	-- The scheme must be followed by code, such as alert( or //, so a title search such as "JavaScript: The Good Parts" passes.
@@ -320,6 +369,7 @@ localized_global.WAF_query_string_Request_table = {
 	{
 		"(?s).*",
 		[[(?s)(?:[\x00-\x20]*+|.*["'\x60=(<>])(?:(?:j[\t\n\r]*+a[\t\n\r]*+v[\t\n\r]*+a|v[\t\n\r]*+b|l[\t\n\r]*+i[\t\n\r]*+v[\t\n\r]*+e)[\t\n\r]*+s[\t\n\r]*+c[\t\n\r]*+r[\t\n\r]*+i[\t\n\r]*+p[\t\n\r]*+t\s*:\s*(?:[^\s\w]|[\w$.]+\s*[(\x60=])|data\s*:\s*(?:text/html|image/svg[+\s]xml|application/(?:x-)?javascript)).*]],
+		"xss",
 	},
 	-- Command injection, a shell separator or substitution, a common command, and then what only a shell line has next: its end, an operator, an option, a path, a digit, a quote, a URL, or a host.
 	-- So titles such as "Animal behaviour; cat breeds" or "Table tennis; ping pong" pass.
@@ -330,11 +380,13 @@ localized_global.WAF_query_string_Request_table = {
 	{
 		"(?s).*",
 		[[(?s).*(?:([;|\n\x60]|&&|\$\()|&)\s*(?:(?:/usr)?(?:/local)?/s?bin/)?(?:id|whoami|uname|cat|ls|wget|curl|nc|ncat|netcat|bash|sh|zsh|python[23]?|perl|php|ruby|ping|nslookup|dig|sleep|echo|chmod|rm|mkfifo|powershell|cmd|certutil|busybox|base64|telnet|tftp|ifconfig)(?(1)(?:\s*$|\s*[|;&<>\x60)]|\s+[-/$.~\d'"]|\s+https?:|\s+[\w-]+\.[\w.-]*[a-z]{2,}|\s+[\w.-]+/[\w./-]*\.[a-z]{2,})|(?:\s*[|<>\x60]|\s+-{1,2}[a-z]|\s+[/$~'"]|\s+https?:|\s+[\w-]+\.[\w.-]*[a-z]{2,}|\s+[\w.-]+/[\w./-]*\.[a-z]{2,})).*]],
+		"cmdi",
 	},
 	-- Command injection, strings that only an attack sends: a shell path, a /dev/tcp reverse shell, $IFS as a space, Shellshock, or a Windows shell with its switches.
 	{
 		"(?s).*",
 		[[(?s).*(?:/bin/(?:ba|da|z|k)?sh(?![a-z])|/dev/(?:tcp|udp)/|\$\{?ifs\}?|\(\)\s*\{\s*[:\w]+;|cmd(?:\.exe)?\s*/[ck]\s|powershell(?:\.exe)?\s+-(?:e|enc|c|nop|w)\b).*]],
+		"cmdi",
 	},
 	-- SSRF, a URL to a loopback, private, link-local, or cloud metadata address, also as hex, decimal, octal, an IPv6 literal, or behind user@, or a scheme that only internal services speak.
 	-- Public URLs, such as https://doi.org/... in a redirect parameter, pass.
@@ -344,12 +396,14 @@ localized_global.WAF_query_string_Request_table = {
 	{
 		"(?s).*",
 		[[(?s).*(?:(?:gopher|dict|ldaps?|tftp|netdoc)://|file:/|jar:(?:https?|file|ftp):/|://(?>[^/?#\s]*@)?(?:\[[0-9a-f:.%]+\]|(?:localhost\.?|127(?:\.(?:0x[0-9a-f]+|\d+)){1,3}\.?|0\.0\.0\.0\.?|0x[0-9a-f]+(?:\.(?:0x)?[0-9a-f]+)*\.?|\d{8,10}\.?|0\d*(?:\.(?:0x[0-9a-f]+|\d+)){0,3}\.?|10(?:\.(?:0x[0-9a-f]+|\d+)){1,3}\.?|192\.(?:168|0xa8|0250)(?:\.(?:0x[0-9a-f]+|\d+)){1,2}\.?|172\.(?:1[6-9]|2\d|3[01]|0x1[0-9a-f]|0[23][0-7])(?:\.(?:0x[0-9a-f]+|\d+)){1,2}\.?|169\.(?:254|0xfe|0376)(?:\.(?:0x[0-9a-f]+|\d+)){1,2}\.?|metadata\.google\.internal\.?|100\.100\.100\.200\.?)(?:[:/?#]|$))).*]],
+		"ssrf",
 	},
 	-- Java deserialization, a serialized object as base64 (rO0AB), hex (aced0005), or raw bytes, or a JSON gadget type.
 	-- The object must start the value or follow a non-base64 character, so an arbitrary token, such as an OAI resumptionToken, cannot match by chance.
 	{
 		"(?s).*",
 		[[(?s)(?:(?:.*[^a-z0-9+/])?(?:ro0ab|aced0005|\xac\xed\x00\x05)|.*(?:"@type"\s*:\s*"|jdbcrowsetimpl|templatesimpl|commons\.collections\.functors|ysoserial)).*]],
+		"rce",
 	},
 	-- PHP object injection, a serialized object such as O:8:"stdClass":0:{} or O:+8:..., or a phar:// stream, whose metadata PHP unserializes.
 	-- Serialized arrays and strings without an object pass.
@@ -357,6 +411,7 @@ localized_global.WAF_query_string_Request_table = {
 	{
 		"(?s).*",
 		[[(?s).*(?:(?:^|[^a-z0-9_]|[0-9a-f]{32})[oc]:\+?\d{1,6}:"[^"]{1,200}":\d{1,6}:\{|phar://).*]],
+		"rce",
 	},
 	-- PHP code tags, an XML DOCTYPE or ENTITY declaration (XXE), and Java template injection.
 	-- Java covers a Spring expression type reference such as ${T(java.lang.Runtime)} or ${(T(...)), reflection through getClass().forName(, new java.lang.ProcessBuilder or Runtime, Velocity's $class.inspect(, and FreeMarker's <#assign and Execute utility.
@@ -364,11 +419,13 @@ localized_global.WAF_query_string_Request_table = {
 	{
 		"(?s).*",
 		[[(?s).*(?:<\?(?:php|=)|<!(?:doctype|entity)\s|[$#]\{\s*\(*\s*t\s*\(|(?:getclass\s*\(\s*\)\s*\.\s*forname|\.class\.forname|\.inspect)\s*\(|new\s+java\.lang\.(?:processbuilder|runtime)|<#assign\b|freemarker\.template\.utility\.).*]],
+		"rce",
 	},
 	-- ASP code injection, JSP and ERB template tags included: a <% tag, or the objects and calls that classic ASP webshells use.
 	{
 		"(?s).*",
 		[[(?s).*(?:<%|(?<![a-z0-9_])(?:response\.(?:write|binarywrite)|server\.(?:createobject|execute|transfer|mappath)|createobject\s*\(|wscript\.shell|scripting\.filesystemobject|adodb\.stream|executeglobal|(?:eval|execute)\s*\(?\s*request)).*]],
+		"rce",
 	},
 }
 
@@ -379,48 +436,57 @@ localized_global.WAF_Header_Request_table = {
 	{
 		"^(?:cookie|referer|user-agent)$",
 		[[(?i)(?:<|%3c)/?(?:script|iframe|svg|img|body|object|embed|style|link|meta|base|form|input|details|math|video|audio)(?![a-z0-9_-])|^(?>.*?(?:<|%3c)[a-z]).*?(?:[\s/"'\x60+]|%2[0f27])on[a-z]{3,}\s*(?:=|%3d)|(?:["'\x60]|%2[27]|%60)(?:\s|\+|%20)*+on[a-z]{3,}\s*(?:=|%3d)]],
+		"xss",
 	},
 	-- A script URL as the whole Referer, which an admin log view may turn into a link; browsers drop tabs and line breaks inside the scheme.
 	{
 		"^referer$",
 		[[(?i)^\s*(?:j[\t\n\r ]*a[\t\n\r ]*v[\t\n\r ]*a|v[\t\n\r ]*b|l[\t\n\r ]*i[\t\n\r ]*v[\t\n\r ]*e)[\t\n\r ]*s[\t\n\r ]*c[\t\n\r ]*r[\t\n\r ]*i[\t\n\r ]*p[\t\n\r ]*t\s*:]],
+		"xss",
 	},
 	-- SQLi through headers that apps store or log, client address headers included: UNION SELECT, time-based or error-based functions, and a subquery.
 	-- An inline comment may sit before the parenthesis, as in SLEEP/**/(5), as in the query rule.
 	{
 		"^(?:cookie|referer|user-agent|x-forwarded-for|x-real-ip|client-ip)$",
 		[[(?i)^(?>.*?(?<![a-z_])union(?![a-z0-9_])).*(?<![a-z_])select(?![a-z0-9_])|(?<![a-z_])(?:sleep|pg_sleep(?:_for|_until)?|benchmark|extractvalue|updatexml)(?:\s|/\*[^*]*+\*+/)*+\(|\((?:\s|/\*[^*]*+\*+/)*+select(?![a-z0-9_])]],
+		"sqli",
 	},
 	{
 		"^x-forwarded-host$",
 		[[(?:/|\\)]],
+		"protocol",
 	},
 	-- Log4Shell (CVE-2021-44228, Log4j 2.x): scan every header value for ${jndi:...} / ${...:...}
 	-- The same linear scan as the query rule, anchored with ^ so that it runs once per value.
 	{
 		"^.*$",
 		[[(?is)^(?:.*\$\{jndi|(?:(?:[^$]++|\$(?!\{))*+\$\{[^}:]*+\})*+(?:[^$]++|\$(?!\{))*+\$\{[^}:]*+:[^}]*+\})]],
+		"rce",
 	},
 	-- Java deserialization through any header, such as a rememberMe cookie: a serialized object at the start of a value, case-sensitive like base64.
 	{
 		"^.*$",
 		[[(?:^|[^A-Za-z0-9+/])(?:rO0AB|aced0005|ACED0005)]],
+		"rce",
 	},
 	-- PHP object injection through cookies, which PHP decodes before an app unserializes them, or a phar:// stream; raw or percent-encoded, %2B for the + included.
 	-- The object may also follow a hex HMAC, as in Yii2's signed cookies.
 	{
 		"^cookie$",
 		[[(?i)(?:^|[^a-z0-9_]|[0-9a-f]{32})[oc](?::|%3a)(?:\+|%2b)?\d{1,6}(?::|%3a)(?:"|%22).{1,200}?(?:"|%22)(?::|%3a)\d{1,6}(?::|%3a)(?:\{|%7b)|phar(?::|%3a)(?:/|%2f){2}]],
+		"rce",
 	},
 	-- PHP code tags, which a log viewer that includes the log file would run, and Java template injection as in the query rule, in any header.
 	{
 		"^.*$",
 		[[(?i)<\?(?:php|=)|[$#]\{\s*\(*\s*t\s*\(|(?:getclass\s*\(\s*\)\s*\.\s*forname|\.class\.forname|\.inspect)\s*\(|new\s+java\.lang\.(?:processbuilder|runtime)|<#assign\b|freemarker\.template\.utility\.]],
+		"rce",
 	},
 	-- Shellshock (CVE-2014-6271): a function definition in any header, which a CGI script would hand to bash.
 	{
 		"^.*$",
 		[[\(\s*\)\s*\{]],
+		"cmdi",
 	},
 }
 
