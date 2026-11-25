@@ -496,10 +496,10 @@ localized_global.WAF_POST_Request_table = {}
 
 -- waf-ban.lua checks request bodies in the rewrite phase with WAF_query_string_Request_table; upstream never reads these two settings.
 -- It checks each urlencoded field, each multipart field without a filename= parameter (PHP's test for a file), and each JSON object key and each JSON value under its innermost object key, unquoted so that {"color":"#ffffff"} passes, with its own parser because no JSON library is built in.
--- JSON that does not parse, nests deeper than 100 levels, or holds more than 1000 keys and values is checked as one text after its escapes are decoded.
+-- JSON that does not parse or holds more than 1000 keys and values is checked as one text after its escapes are decoded; JSON nested deeper than 100 levels gets 413.
 -- An xml or +xml body gets one XML rule in waf-ban.lua instead, because Atom and SOAP tags such as <link> and attributes such as online= match the query XSS rules; a text/plain or untyped body is checked as JSON or XML when it starts with {, [, or <.
 -- It reads up to 128 KB, where every query rule stays clear of the PCRE match limit even without PCRE JIT; 1 MB values hit that limit.
--- A larger urlencoded, JSON, or XML body, or a urlencoded or multipart body with more than 1000 fields, gets 413, which never counts toward a ban; a larger text/plain body stays unchecked.
+-- A larger urlencoded, JSON, XML, or untyped body, or a urlencoded or multipart body with more than 1000 fields, gets 413, which never counts toward a ban; a larger explicit text/plain body stays unchecked.
 -- A larger multipart body is an upload: its file parts are skipped and its other fields are still checked, up to 128 KB of field text, or 413.
 -- true answers a hit with 403, which counts toward a ban; DSpace's log-only hits on 2026-11-23 were sqlmap-style payloads in /browse and /discover forms.
 -- false only logs "Would block (log only) Request body prohibited", as a fallback for tuning a new site; prefer a WAF_body_skip entry for one false-positive path.
@@ -518,6 +518,7 @@ localized_global.WAF_cookie_block = true
 -- Lua patterns for cookie names that waf-ban.lua does not check, name and value, because they carry opaque tokens; upstream never reads this setting.
 -- sl-session is the base64 session token of a SafeLine front proxy.
 localized_global.WAF_cookie_skip = { "^sl%-session$" }
+localized_global.WAF_utf8_strict = true
 
 -- Upstream's default anti_ddos_table closes the connection and bans the address for 24 hours on PATCH, PUT, DELETE, CONNECT, OPTIONS, or TRACE.
 -- REST clients (DSpace's Angular UI and REST API, SWORDv2, the WordPress REST API) send PUT, PATCH, and DELETE, and Microsoft Office sends OPTIONS before it opens a bitstream link, so only CONNECT and TRACE stay banned.

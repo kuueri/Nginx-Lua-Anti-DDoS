@@ -93,6 +93,39 @@ if not lib then
 	}
 	local CRAWLERS = { "bot", "crawl", "spider", "slurp", "turnitin", "facebookexternalhit" }
 	local JSON_ESCAPES = { b = "\b", f = "\f", n = "\n", r = "\r", t = "\t" }
+	local HTML_ENTITIES = {
+		amp = "&",
+		apos = "'",
+		colon = ":",
+		comma = ",",
+		equals = "=",
+		excl = "!",
+		grave = "`",
+		gt = ">",
+		lbrace = "{",
+		lbrack = "[",
+		lcub = "{",
+		lpar = "(",
+		lsqb = "[",
+		lt = "<",
+		newline = "\n",
+		num = "#",
+		percnt = "%",
+		period = ".",
+		plus = "+",
+		quest = "?",
+		quot = '"',
+		rbrace = "}",
+		rbrack = "]",
+		rcub = "}",
+		rpar = ")",
+		rsqb = "]",
+		semi = ";",
+		sol = "/",
+		tab = "\t",
+		verbar = "|",
+		vert = "|",
+	}
 	local XML_RULE =
 		[[(?is)(?:<!(?:doctype|entity)\s|<(?:[\w.-]+:)?include\b[^<>]*\bhref\s*=|http://www\.w3\.org/1999/XSL/Transform|<(?:java|object|void|new)\b[^<>]*\bclass\s*=|<\?(?:php|=)|<script(?![a-z0-9_-])|\$\{jndi|^(?:(?:[^$]++|\$(?!\{))*+\$\{[^}:]*+\})*+(?:[^$]++|\$(?!\{))*+\$\{[^}:]*+:[^}]*+\}|[$#]\{\s*\(*\s*t\s*\(|(?:getclass\s*\(\s*\)\s*\.\s*forname|\.class\.forname|\.inspect)\s*\(|new\s+java\.lang\.(?:processbuilder|runtime)|<#assign\b|freemarker\.template\.utility\.)]]
 
@@ -149,11 +182,73 @@ if not lib then
 		end
 	end
 
+	local function has_bad_utf8(s)
+		if localized_global.WAF_utf8_strict == false or not s:find("[\192-\255]") then
+			return false
+		end
+		return s:find("[\192\193\245-\255]") ~= nil
+			or s:find("\224[\128-\159]") ~= nil
+			or s:find("\237[\160-\191]") ~= nil
+			or s:find("\240[\128-\143]") ~= nil
+			or s:find("\244[\144-\191]") ~= nil
+	end
+
+	local function html_decode(s)
+		if not s:find("&[#%a]") then
+			return nil
+		end
+		local changed = false
+		local out = s:gsub("&#[xX](%x+);?", function(h)
+			h = h:match("^0*(%x+)$")
+			local cp = #h <= 6 and tonumber(h, 16)
+			if cp == 0 then
+				changed = true
+				return ""
+			elseif cp and cp <= 127 then
+				changed = true
+				return string.char(cp)
+			end
+		end)
+		out = out:gsub("&#(%d+);?", function(d)
+			d = d:match("^0*(%d+)$")
+			local cp = #d <= 7 and tonumber(d, 10)
+			if cp == 0 then
+				changed = true
+				return ""
+			elseif cp and cp <= 127 then
+				changed = true
+				return string.char(cp)
+			end
+		end)
+		out = out:gsub("&(%a+);", function(name)
+			local ch = HTML_ENTITIES[name:lower()]
+			if ch then
+				changed = true
+				return ch
+			end
+		end)
+		if changed then
+			return out
+		end
+	end
+
+	local function cmdline_norm(s)
+		if (s:find("[;|\n`&]") or s:find("$(", 1, true)) and s:find("['\"\\^]") then
+			return (s:gsub("['\"\\^]", ""))
+		end
+	end
+
 	local function json_text(s)
 		return (
 			s:gsub("\\(.)(%x?%x?%x?%x?)", function(c, h)
-				if c == "u" and #h == 4 and h:sub(1, 2) == "00" then
-					return string.char(tonumber(h, 16))
+				if c == "u" and #h == 4 then
+					local hi = h:sub(1, 2):lower()
+					local lo = tonumber(h:sub(3, 4), 16)
+					if hi == "00" then
+						return string.char(lo)
+					elseif hi == "ff" and lo >= 0x01 and lo <= 0x5e then
+						return string.char(lo + 0x20)
+					end
 				end
 				return (JSON_ESCAPES[c] or c) .. h
 			end)
@@ -161,7 +256,7 @@ if not lib then
 	end
 
 	local function json_fields(body)
-		local fields, pos = {}, 1
+		local fields, pos, too_deep = {}, 1, false
 		local function skip()
 			pos = body:find("[^ \t\r\n]", pos) or #body + 1
 		end
@@ -217,6 +312,7 @@ if not lib then
 			skip()
 			local c = body:sub(pos, pos)
 			if depth > 100 then
+				too_deep = true
 				return
 			elseif c == "{" then
 				return members(key, depth, "}")
@@ -235,6 +331,9 @@ if not lib then
 		if value("", 0) then
 			skip()
 			return pos > #body and fields or nil
+		end
+		if too_deep then
+			return nil, "depth"
 		end
 	end
 
@@ -290,6 +389,9 @@ if not lib then
 	local function part_disposition(head)
 		if head:find("\0", 1, true) then
 			return nil, "null byte in multipart header"
+		end
+		if has_bad_utf8(head) then
+			return nil, "invalid UTF-8 in multipart header"
 		end
 		if head:find("\n[ \t]") then
 			return nil, "folded multipart header"
@@ -451,19 +553,58 @@ if not lib then
 		return fields, parts
 	end
 
-	local function rule_hit(fields)
+	local function rule_hit(fields, only_cat)
 		for i, rule in ipairs(compiled("WAF_query_string_Request_table", "^(?i)", "$")) do
-			for _, field in ipairs(fields) do
-				if rule[1] or ngx.re.find(field[1], rule[2], "jos") then
-					local from, _, err = ngx.re.find(field[2], rule[3], "jo")
-					if from or err then
-						local name = field[1]:sub(1, 64):gsub("%c", "?")
-						return name .. ", WAF_query_string_Request_table rule " .. i .. (err and ", " .. err or ""),
-							rule[4]
+			if not only_cat or rule[4] == only_cat then
+				for _, field in ipairs(fields) do
+					if rule[1] or ngx.re.find(field[1], rule[2], "jos") then
+						local from, _, err = ngx.re.find(field[2], rule[3], "jo")
+						if from or err then
+							local name = field[1]:sub(1, 64):gsub("%c", "?")
+							return name .. ", WAF_query_string_Request_table rule " .. i .. (err and ", " .. err or ""),
+								rule[4]
+						end
 					end
 				end
 			end
 		end
+	end
+
+	local function evasion_hit(fields)
+		local xss_fields, cmdi_fields
+		for _, field in ipairs(fields) do
+			local v = field[2]
+			local dec = html_decode(v)
+			if dec then
+				xss_fields = xss_fields or {}
+				xss_fields[#xss_fields + 1] = { field[1], dec }
+			end
+			local cmd = cmdline_norm(v)
+			if cmd then
+				cmdi_fields = cmdi_fields or {}
+				cmdi_fields[#cmdi_fields + 1] = { field[1], cmd }
+			end
+		end
+		if xss_fields then
+			local reason, cat = rule_hit(xss_fields, "xss")
+			if reason then
+				return reason, cat
+			end
+		end
+		if cmdi_fields then
+			local reason, cat = rule_hit(cmdi_fields, "cmdi")
+			if reason then
+				return reason, cat
+			end
+		end
+	end
+
+	local function check_fields(fields)
+		local reason, cat = rule_hit(fields)
+		if reason then
+			return reason, cat
+		end
+		return evasion_hit(fields)
 	end
 
 	local function classify_upstream()
@@ -603,12 +744,18 @@ if not lib then
 				if dname:find("\0", 1, true) then
 					return nil, "null byte", "protocol"
 				end
+				if has_bad_utf8(dname) then
+					return nil, "invalid UTF-8", "protocol"
+				end
 				if not skipped(name) or (value ~= "" and not value:find("^[A-Za-z0-9+/=_%.%-~]+$")) then
 					fields[#fields + 1] = { dname, dname }
 					if value ~= "" then
 						local dval = ngx.unescape_uri(value)
 						if dval:find("\0", 1, true) then
 							return nil, "null byte", "protocol"
+						end
+						if has_bad_utf8(dval) then
+							return nil, "invalid UTF-8", "protocol"
 						end
 						fields[#fields + 1] = { dname, dval }
 					end
@@ -617,6 +764,9 @@ if not lib then
 				local dval = ngx.unescape_uri(value)
 				if dval:find("\0", 1, true) then
 					return nil, "null byte", "protocol"
+				end
+				if has_bad_utf8(dval) then
+					return nil, "invalid UTF-8", "protocol"
 				end
 				fields[#fields + 1] = { "", dval }
 			end
@@ -636,7 +786,8 @@ if not lib then
 			or lower:find("^%s*multipart/form%-data") and "multipart"
 			or lower:find("json", 1, true) and "json"
 			or (subtype == "xml" or subtype:sub(-4) == "+xml") and "xml"
-			or (ctype == "" or lower:find("^%s*text/plain")) and "text"
+			or ctype == "" and "untyped"
+			or lower:find("^%s*text/plain") and "text"
 		if not kind then
 			return
 		end
@@ -694,7 +845,7 @@ if not lib then
 			if #body > BODY_LIMIT then
 				return over, "over " .. BODY_LIMIT .. " bytes"
 			end
-			if kind == "text" then
+			if kind == "text" or kind == "untyped" then
 				local c = body:match("^%s*([{%[<])")
 				kind = c == "<" and "xml" or c and "json"
 				if not kind then
@@ -705,9 +856,19 @@ if not lib then
 				if body:find("\0", 1, true) then
 					return ngx.HTTP_FORBIDDEN, "null byte", "protocol"
 				end
+				if has_bad_utf8(body) then
+					return ngx.HTTP_FORBIDDEN, "invalid UTF-8", "protocol"
+				end
 				local hit, _, err = ngx.re.find(body, XML_RULE, "jo")
 				if hit or err then
 					return ngx.HTTP_FORBIDDEN, "XML rule" .. (err and ", " .. err or ""), "xxe"
+				end
+				local dec = html_decode(body)
+				if dec then
+					hit, _, err = ngx.re.find(dec, XML_RULE, "jo")
+					if hit or err then
+						return ngx.HTTP_FORBIDDEN, "XML rule" .. (err and ", " .. err or ""), "xxe"
+					end
 				end
 				return
 			elseif kind == "form" then
@@ -718,7 +879,12 @@ if not lib then
 					end
 				end
 			else
-				fields = json_fields(body) or { { "", json_text(body) } }
+				local jerr
+				fields, jerr = json_fields(body)
+				if jerr == "depth" then
+					return 413, "JSON nested over 100 levels"
+				end
+				fields = fields or { { "", json_text(body) } }
 			end
 		end
 		if kind ~= "multipart" and #fields > BODY_FIELDS then
@@ -728,13 +894,16 @@ if not lib then
 			if fields[k][1]:find("\0", 1, true) or fields[k][2]:find("\0", 1, true) then
 				return ngx.HTTP_FORBIDDEN, "null byte", "protocol"
 			end
+			if has_bad_utf8(fields[k][1]) or has_bad_utf8(fields[k][2]) then
+				return ngx.HTTP_FORBIDDEN, "invalid UTF-8", "protocol"
+			end
 		end
 		for k = 1, #fields do
 			if fields[k][1] ~= "" then
 				fields[#fields + 1] = { fields[k][1], fields[k][1] }
 			end
 		end
-		local reason, cat = rule_hit(fields)
+		local reason, cat = check_fields(fields)
 		if reason then
 			return ngx.HTTP_FORBIDDEN, "field " .. reason, cat
 		end
@@ -743,9 +912,12 @@ if not lib then
 	lib = {
 		ai_agents = AI_AGENTS,
 		is_private = is_private,
+		has_bad_utf8 = has_bad_utf8,
 		compiled = compiled,
 		find = find,
 		rule_hit = rule_hit,
+		evasion_hit = evasion_hit,
+		check_fields = check_fields,
 		record_hit = record_hit,
 		log_hit = log_hit,
 		cookie_fields = cookie_fields,
@@ -773,6 +945,12 @@ if phase == "rewrite" then
 	local uri = ngx.var.uri
 	if uri:find("\0", 1, true) then
 		lib.log_hit("URI", true, "null byte")
+		ngx.ctx.waf_recorded = true
+		lib.record_hit("protocol")
+		return ngx.exit(ngx.HTTP_FORBIDDEN)
+	end
+	if lib.has_bad_utf8(uri) then
+		lib.log_hit("URI", true, "invalid UTF-8")
 		ngx.ctx.waf_recorded = true
 		lib.record_hit("protocol")
 		return ngx.exit(ngx.HTTP_FORBIDDEN)
@@ -810,7 +988,7 @@ if phase == "rewrite" then
 		ngx.header["Retry-After"] = AI_WINDOW
 		return ngx.exit(ngx.HTTP_TOO_MANY_REQUESTS)
 	end
-	local names = {}
+	local names, arg_vals = {}, {}
 	for name, values in pairs(args) do
 		if name:find("\0", 1, true) then
 			lib.log_hit("argument name", true, "null byte")
@@ -818,26 +996,57 @@ if phase == "rewrite" then
 			lib.record_hit("protocol")
 			return ngx.exit(ngx.HTTP_FORBIDDEN)
 		end
-		if type(values) == "table" then
-			for _, v in ipairs(values) do
-				if type(v) == "string" and v:find("\0", 1, true) then
-					lib.log_hit("argument value", true, "null byte")
-					ngx.ctx.waf_recorded = true
-					lib.record_hit("protocol")
-					return ngx.exit(ngx.HTTP_FORBIDDEN)
-				end
-			end
-		elseif type(values) == "string" and values:find("\0", 1, true) then
-			lib.log_hit("argument value", true, "null byte")
+		if lib.has_bad_utf8(name) then
+			lib.log_hit("argument name", true, "invalid UTF-8")
 			ngx.ctx.waf_recorded = true
 			lib.record_hit("protocol")
 			return ngx.exit(ngx.HTTP_FORBIDDEN)
 		end
+		if type(values) == "table" then
+			for _, v in ipairs(values) do
+				if type(v) == "string" then
+					if v:find("\0", 1, true) then
+						lib.log_hit("argument value", true, "null byte")
+						ngx.ctx.waf_recorded = true
+						lib.record_hit("protocol")
+						return ngx.exit(ngx.HTTP_FORBIDDEN)
+					end
+					if lib.has_bad_utf8(v) then
+						lib.log_hit("argument value", true, "invalid UTF-8")
+						ngx.ctx.waf_recorded = true
+						lib.record_hit("protocol")
+						return ngx.exit(ngx.HTTP_FORBIDDEN)
+					end
+					arg_vals[#arg_vals + 1] = { name, v }
+				end
+			end
+		elseif type(values) == "string" then
+			if values:find("\0", 1, true) then
+				lib.log_hit("argument value", true, "null byte")
+				ngx.ctx.waf_recorded = true
+				lib.record_hit("protocol")
+				return ngx.exit(ngx.HTTP_FORBIDDEN)
+			end
+			if lib.has_bad_utf8(values) then
+				lib.log_hit("argument value", true, "invalid UTF-8")
+				ngx.ctx.waf_recorded = true
+				lib.record_hit("protocol")
+				return ngx.exit(ngx.HTTP_FORBIDDEN)
+			end
+			arg_vals[#arg_vals + 1] = { name, values }
+		end
 		names[#names + 1] = { name, name }
 	end
-	local reason, cat = lib.rule_hit(names)
+	local reason, cat = lib.check_fields(names)
 	if reason then
 		lib.log_hit("argument name", true, reason)
+		ngx.ctx.waf_recorded = true
+		lib.record_hit(cat)
+		return ngx.exit(ngx.HTTP_FORBIDDEN)
+	end
+	reason, cat = lib.evasion_hit(arg_vals)
+	if reason then
+		lib.log_hit("argument value", true, reason)
 		ngx.ctx.waf_recorded = true
 		lib.record_hit(cat)
 		return ngx.exit(ngx.HTTP_FORBIDDEN)
@@ -846,7 +1055,7 @@ if phase == "rewrite" then
 	if not cfields then
 		reason, cat = creason, ccat
 	else
-		reason, cat = lib.rule_hit(cfields)
+		reason, cat = lib.check_fields(cfields)
 	end
 	if reason then
 		lib.log_hit("cookie", localized_global.WAF_cookie_block, reason)

@@ -563,9 +563,18 @@ check(
 	"JSON with trailing data must be checked as one text"
 )
 check(
-	body({ ctype = "application/json", body = ("["):rep(101) .. '"#"' .. ("]"):rep(101) }) == 403,
-	"JSON nested deeper than 100 levels must be checked as one text"
+	body({ ctype = "application/json", body = ("["):rep(101) .. '"#"' .. ("]"):rep(101) }) == 413,
+	"JSON nested deeper than 100 levels must get 413"
 )
+check(
+	body({ ctype = "application/json", body = ("["):rep(101) .. "1" .. ("]"):rep(101) }) == 413,
+	"clean JSON nested deeper than 100 levels must get 413"
+)
+check(
+	body({ ctype = "application/json", body = '{"q":"\\uff55nion"}' }) == 403,
+	"JSON fullwidth ASCII \\uff01-\\uff5e escapes must be folded and checked"
+)
+check(body({ body = over }) == 413, "an untyped body over 128 KB without Content-Type must get 413")
 check(
 	body({ ctype = "application/json", body = "[" .. ("1,"):rep(1000) .. "1]" }) == 200,
 	"JSON with more than 1000 values must be checked as one text, not refused"
@@ -913,6 +922,47 @@ check(
 	"a NUL byte in an unchecked binary Content-Type body must pass"
 )
 
+check(
+	request("203.0.113.150", { uri = "/\192\174\192\174/etc/passwd" }) == 403,
+	"overlong 2-byte UTF-8 in decoded URI must get 403"
+)
+check(
+	request("203.0.113.151", { args = { q = "\224\128\175etc/passwd" } }) == 403,
+	"overlong 3-byte UTF-8 in query argument value must get 403"
+)
+check(
+	request("203.0.113.152", { args = { ["\237\160\128"] = "1" } }) == 403,
+	"UTF-16 surrogate in query argument name must get 403"
+)
+check(
+	request("203.0.113.153", { cookie = "q=%F0%80%80%AF" }) == 403,
+	"overlong 4-byte UTF-8 in cookie value must get 403"
+)
+check(body({ ctype = form, body = "q=%F4%90%80%80" }) == 403, "UTF-8 above U+10FFFF in form body must get 403")
+check(body({ ctype = "text/xml", body = "<a>\245</a>" }) == 403, "invalid high byte 0xF5 in XML body must get 403")
+check(body({
+	ctype = mp,
+	body = part('Content-Disposition: form-data; name="f"; filename="\192\175a.txt"', "ok") .. "--XyZ--\r\n",
+}) == 403, "overlong UTF-8 in multipart header must get 403")
+check(request("203.0.113.154", {
+	uri = "/penelitian/caf\195\169/\227\129\130/\240\159\152\128",
+	args = {
+		q = "Pengantar \216\167\217\132\216\185\216\177\216\168\217\138\216\169 \224\160\128 \237\159\191 \244\143\191\191",
+	},
+	cookie = "lang=id_%C3%A9",
+}) == 200, "valid multi-byte UTF-8 boundary sequences must pass")
+check(body({
+	ctype = mp,
+	body = part('Content-Disposition: form-data; name="f"; filename="a.bin"', "\192\175\255\237\160\128")
+		.. "--XyZ--\r\n",
+}) == 200, "invalid UTF-8 bytes inside uploaded binary file body must pass")
+localized_global.WAF_utf8_strict = false
+check(
+	request("203.0.113.155", { uri = "/\192\174" }) == 200,
+	"disabling WAF_utf8_strict must allow legacy non-UTF-8 bytes"
+)
+localized_global.WAF_utf8_strict = true
+
 local function hex(s)
 	return (s:gsub(".", function(c)
 		return string.format("%02x", c:byte())
@@ -1048,6 +1098,68 @@ check(
 	request("203.0.113.143", { cookie = "sl-session=5Or3-_./+~==" }) == 200,
 	"real rules: valid opaque sl-session token must pass"
 )
+for i, payload in ipairs({
+	"java&#x73;cript:alert(1)",
+	"&#106;avascript:alert(1)",
+	"&#0000000106;avascript:alert(1)",
+	"&#x0000006a;avascript:alert(1)",
+	"&#106avascript:alert(1)",
+	"javascript&colon;alert(1)",
+	"java&#09;script:alert(1)",
+	"java&#0;script:alert(1)",
+	"java&tab;script&colon;alert&lpar;1&rpar;",
+	"&lt;script&gt;alert(1)&lt;/script&gt;",
+}) do
+	check(
+		request("203.0.113." .. (160 + i), { args = { q = payload } }) == 403,
+		"real rules: HTML-entity XSS in query value must get 403: " .. payload
+	)
+end
+check(
+	body({ ctype = form, body = "url=java%26%23x73%3Bcript%3Aalert%281%29" }) == 403,
+	"real rules: HTML-entity XSS in form body must get 403"
+)
+check(
+	body({ ctype = "text/xml", body = "<entry><summary>&lt;script&gt;alert(1)&lt;/script&gt;</summary></entry>" })
+		== 403,
+	"real rules: HTML-entity script tag in XML body must get 403"
+)
+check(body({
+	ctype = "application/atom+xml",
+	body = "<entry><title>A &amp; B</title><summary>&lt;p&gt;ok&lt;/p&gt;</summary></entry>",
+}) == 200, "real rules: benign HTML entities in Atom XML must pass")
+for i, payload in ipairs({
+	";c'a't /etc/passwd",
+	";c\\at /etc/passwd",
+	';w"h"oami',
+	";c^a^t /etc/passwd",
+	"|p'y't'h'o'n3 -c x",
+	"$(w'h'oami)",
+}) do
+	check(
+		request("203.0.113." .. (175 + i), { args = { q = payload } }) == 403,
+		"real rules: cmdLine-obfuscated CMDi in query value must get 403: " .. payload
+	)
+end
+check(
+	body({ ctype = json, body = [[{"q":";c'a't /etc/passwd"}]] }) == 403,
+	"real rules: cmdLine-obfuscated CMDi in JSON body must get 403"
+)
+check(
+	body({ ctype = json, body = [[{"q":"\uff1cscript\uff1ealert(1)\uff1c/script\uff1e"}]] }) == 403,
+	"real rules: fullwidth JSON XSS escape must get 403"
+)
+for _, benign in ipairs({
+	"Teachers&apos; &amp; students&apos; perceptions",
+	"Report \"A\"; 'cat' breeds",
+	'R & "Python" programming',
+	"a=1&period=2025&tab=home",
+}) do
+	check(
+		request("203.0.113.162", { args = { q = benign } }) == 200,
+		"real rules: benign text with entities or quotes must pass: " .. benign
+	)
+end
 
 for k in pairs(stats_store) do
 	stats_store[k] = nil
