@@ -1,6 +1,6 @@
 # Workspace
 
-Cybersecurity defense fork of [Nginx-Lua-Anti-DDoS](https://github.com/C0nw0nk/Nginx-Lua-Anti-DDoS) deploying nginx WAF rules and exponential IP banning on Ubuntu and RPM.
+Cyber defense fork of [Nginx-Lua-Anti-DDoS](https://github.com/C0nw0nk/Nginx-Lua-Anti-DDoS) deploying nginx WAF rules and exponential IP banning on Ubuntu and RPM.
 
 - **Fail-closed defense:** close bypasses across raw/decoded URIs, query names/values, headers, cookies, and bodies; treat unexpected rule errors as blocks; keep root hooks tamper-proof.
 - **Minimum latency:** keep request hot paths **tight**—O(1) `lua_shared_dict` lookups, per-worker caching (`package.loaded.waf_ban_cache`), linear regexes, zero blocking I/O, and zero unnecessary allocations on `access`/`log`/banned-IP fast paths (assume `jit.off()` on SELinux Enforcing hosts).
@@ -30,7 +30,7 @@ Real nginx, LuaJIT, SELinux, and systemd behavior is observable only on a target
 
 - Read the comment above any entry in `config/waf-local-overrides.lua` or `config/nginx-waf.conf` before editing; each Lua override table replaces upstream wholesale.
 - Upstream wraps query value patterns as `^(?i)<pattern>$`: group top-level `|` alternatives, keep every rule linear (upstream treats PCRE errors as no match), and verify with `tests/test-rules.lua` and `tests/test-linear.py` (128 KB).
-  Keep `XML_RULE` tag scans in `config/waf-ban.lua` bounded at `<` or `>` (outside `tests/test-linear.py`).
+  Keep `XML_RULE` tag scans in `config/waf-ban.lua` bounded at `<` or `>` and verify linearity with `tests/test-linear.py`.
 - `WAF_URI_Request_table` runs on both raw `request_uri` (upstream) and decoded `$uri` (`waf-ban.lua`); URI rules must hold on both paths.
 - `config/waf-ban.lua` branches on `ngx.get_phase()` (`rewrite`, `access`, `log`): exit early before allocations, rely on upstream `exit_status = false` to set `ngx.ctx.waf_access_passed`, wrap `ngx.exit` in `access` and record rewrite-phase 403s before `ngx.exit` (so `error_page 403` internal redirects that wipe `ngx.ctx` or return `444` still count bans and stats), isolate `waf_bans` from `waf_strikes`, claim bans atomically via `bans:add`, and skip body/cookie/AI checks on `ngx.req.is_internal()`.
 - `config/waf-stats.lua` persists attack, ban, and per-category counters (`waf_stats 1m`) asynchronously from worker 0 to `/var/lib/nginx/waf/stats.txt` every 30 s and on graceful shutdown (`add` on load preserves live values across reloads); each rule in `config/waf-local-overrides.lua` carries its category as element 3, and upstream 403s are classified lazily in the `log` phase only.

@@ -159,23 +159,26 @@ Path rules run twice: once against the raw path (upstream) and once against the 
 This blocks percent-encoded paths such as `/xmlrpc%2ephp` before backend servers decode them.
 
 Upstream inspects only query values.
-`waf-ban.lua` applies the same query rules to more surfaces:
+`waf-ban.lua` extends inspection to more surfaces and anti-evasion checks:
 
 - Every query argument name. A hit returns `403`.
-- Every decoded cookie name and value when `WAF_cookie_block` is `true` (default).
-  `WAF_cookie_skip` lists cookie name patterns to skip, such as opaque proxy session tokens.
+- Every decoded cookie name and value, including nameless cookie values (`=value`), when `WAF_cookie_block` is `true` (default).
+  Requests with more than 200 cookies return `403`.
+  `WAF_cookie_skip` lists cookie name patterns to skip only when the value matches opaque token syntax, such as proxy session tokens.
 - Request bodies up to 128 KB when `WAF_body_block` is `true` (default):
     - URL-encoded form fields.
-    - Non-file multipart form fields.
-    - JSON keys and values. `waf-ban.lua` scans unparseable JSON, JSON deeper than 100 levels, or JSON with over 1,000 entries as decoded text.
+    - Non-file multipart form fields, plus the `name`, `filename`, and `filename*` parameters of file parts.
+    - JSON keys and values, including fullwidth ASCII `\uff01`–`\uff5e` escape folding. `waf-ban.lua` scans unparseable JSON or JSON with over 1,000 entries as decoded text, and returns `413` for JSON nested deeper than 100 levels.
     - XML bodies (`xml` or `+xml` media types), checked with a dedicated linear XML rule for XXE, XInclude, XSLT, script tags, and template injection.
     - `text/plain` or untyped bodies that start with `{`, `[`, or `<`, scanned as JSON or XML.
+- NUL bytes (`\0`, `%00`, `\u0000`) and invalid UTF-8 sequences (overlong encodings, UTF-16 surrogates, and bytes above `U+10FFFF` when `WAF_utf8_strict` is `true`, default) return `403` across decoded `$uri`, query names and values, cookies, multipart headers, XML bodies, and decoded text body fields.
+- Trigger-gated HTML-entity decoding (for XSS and XML rules) and shell quote/escape normalization (for command-injection rules) run across query values, query names, cookies, and bodies when trigger bytes appear.
 
-URL-encoded, JSON, or XML bodies over 128 KB return `413`.
-URL-encoded or multipart bodies with more than 1,000 fields also return `413`.
-`text/plain` bodies over 128 KB stay unchecked.
-Multipart uploads can exceed 128 KB because `waf-ban.lua` streams them in 1 MB chunks, skips file parts (`filename` parameter), and caps non-file field text at 128 KB.
-Ambiguous multipart boundaries or duplicate `Content-Disposition` headers return `403`.
+URL-encoded, JSON, XML, or untyped bodies over 128 KB return `413`.
+JSON nested deeper than 100 levels, URL-encoded or multipart bodies with more than 1,000 fields or parts, and multipart bodies with more than 100 file parts also return `413`.
+Explicit `text/plain` bodies over 128 KB stay unchecked.
+Multipart uploads can exceed 128 KB because `waf-ban.lua` streams them in 1 MB chunks, skips uploaded file contents, and caps non-file field text at 128 KB.
+Duplicate `Content-Type` headers, multipart `Content-Type` headers over 1,024 bytes, ambiguous or invalid boundaries, duplicate `Content-Disposition` headers, folded multipart headers, duplicate `name`/`filename`/`filename*` parameters, and unterminated quotes return `403`.
 
 `WAF_body_skip` lists decoded `$uri` patterns whose bodies stay unchecked, such as rich-text editor endpoints.
 To tune a new site without blocking, set `WAF_body_block` or `WAF_cookie_block` to `false`.
