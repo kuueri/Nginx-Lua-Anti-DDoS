@@ -779,7 +779,139 @@ check(
 )
 localized_global.WAF_cookie_block = false
 check(request("198.51.100.217", { cookie = "q=union" }) == 200, "cookie log-only mode must not block")
+check(
+	request("198.51.100.217", { cookie = ("a=1;"):rep(201) }) == 200,
+	"cookie log-only mode must not block over 200 cookies"
+)
 localized_global.WAF_cookie_block = true
+
+check(body({
+	ctype = mp,
+	body = part('Content-Disposition: form-data; name="union"; filename="clean.txt"', "ok") .. "--XyZ--\r\n",
+}) == 403, "a multipart file part name with a payload must get 403")
+check(body({
+	ctype = mp,
+	body = part('Content-Disposition: form-data; name="f"; filename="union.txt"', "ok") .. "--XyZ--\r\n",
+}) == 403, "a multipart file part filename with a payload must get 403")
+check(body({
+	ctype = mp,
+	body = part("Content-Disposition: form-data; name=\"f\"; filename*=UTF-8''..%2Funion.txt", "ok") .. "--XyZ--\r\n",
+}) == 403, "a multipart file part filename* with a payload must get 403")
+check(body({
+	ctype = mp,
+	body = part(
+		'Content-Disposition: form-data; name="f"; filename="report.pdf"; filename*=UTF-8\'\'report.pdf',
+		"union\0binary"
+	) .. "--XyZ--\r\n",
+}) == 200, "a valid RFC 6266 upload with filename, filename*, and binary NUL body must pass")
+check(body({
+	ctype = mp,
+	body = part('Content-Disposition: form-data; name="order"; filename="report;1.pdf"', "ok") .. "--XyZ--\r\n",
+}) == 200, "an upload filename must not trigger the sort-column rule on part name order")
+check(body({
+	ctype = mp,
+	body = part('Content-Disposition: form-data; name="f"; filename="a.txt"', "x"):rep(101) .. "--XyZ--\r\n",
+}) == 413, "more than 100 multipart file parts must get 413")
+check(body({
+	ctype = mp,
+	body = part('Content-Disposition: form-data; name="f"; filename="a.txt"', "x"):rep(50) .. part(field_q, "x"):rep(
+		951
+	) .. "--XyZ--\r\n",
+}) == 413, "more than 1000 total multipart parts must get 413")
+check(body({
+	ctype = mp,
+	body = part('Content-Disposition: form-data; name="q"\r\n filename="a.txt"', "ok") .. "--XyZ--\r\n",
+}) == 403, "a folded multipart header must get 403")
+check(body({
+	ctype = mp,
+	body = part('Content-Disposition: form-data; name="a"; name="b"', "ok") .. "--XyZ--\r\n",
+}) == 403, "duplicate name parameters in multipart Content-Disposition must get 403")
+check(body({
+	ctype = mp,
+	body = part('Content-Disposition: form-data; name="f"; filename="a.txt"; filename="b.php"', "ok") .. "--XyZ--\r\n",
+}) == 403, "duplicate filename parameters in multipart Content-Disposition must get 403")
+check(body({
+	ctype = mp,
+	body = part("Content-Disposition: form-data; name=\"f\"; filename*=UTF-8''a.txt; filename*=UTF-8''b.txt", "ok")
+		.. "--XyZ--\r\n",
+}) == 403, "duplicate filename* parameters in multipart Content-Disposition must get 403")
+check(body({
+	ctype = mp,
+	body = part('Content-Disposition: form-data; name="f"; x="unterminated', "ok") .. "--XyZ--\r\n",
+}) == 403, "an unterminated quote in multipart Content-Disposition must get 403")
+check(body({
+	ctype = mp,
+	body = part('Content-Disposition: form-data; name="f"; filename="a\0.txt"', "ok") .. "--XyZ--\r\n",
+}) == 403, "a NUL byte in a multipart part header must get 403")
+check(body({
+	ctype = "multipart/form-data; boundary=XyZ; pad=" .. ("a"):rep(1024),
+	body = clean_q,
+}) == 403, "a multipart Content-Type header over 1024 bytes must get 403")
+check(body({
+	ctype = "multipart/form-data; boundary=" .. ("a"):rep(71),
+	body = "--" .. ("a"):rep(71) .. "--\r\n",
+}) == 403, "a multipart boundary over 70 bytes must get 403")
+check(body({
+	ctype = "multipart/form-data; boundary=XyZ<bad>",
+	body = "--XyZ<bad>--\r\n",
+}) == 403, "a multipart boundary with non-RFC-2046 characters must get 403")
+
+check(body({
+	ctype = "application/octet-stream",
+	headers = { ["content-type"] = { "application/octet-stream", "application/json" } },
+	body = '{"q":"union"}',
+}) == 403, "duplicate lowercase content-type headers must get 403")
+check(body({
+	ctype = "text/plain",
+	headers = { ["Content-Type"] = { "text/plain", "application/x-www-form-urlencoded" } },
+	body = "q=union",
+}) == 403, "duplicate Content-Type headers must get 403")
+
+check(request("203.0.113.120", { cookie = ("a=1;"):rep(200) }) == 200, "200 clean cookies must pass")
+check(request("203.0.113.121", { cookie = ("a=1;"):rep(201) }) == 403, "more than 200 cookies must get 403")
+check(
+	request("203.0.113.122", { cookie = ("sl-session=a;"):rep(201) }) == 403,
+	"more than 200 skipped cookies must still get 403"
+)
+check(request("203.0.113.123", { cookie = "=union" }) == 403, "a nameless cookie with a payload must get 403")
+check(
+	request("203.0.113.124", { cookie = "sl-session=abc, q=union" }) == 403,
+	"a skipped cookie with non-token characters must be inspected"
+)
+
+check(request("203.0.113.130", { uri = "/etc/passw\0d" }) == 403, "a NUL byte in decoded URI must get 403")
+check(
+	request("203.0.113.131", { args = { ["a\0b"] = "1" } }) == 403,
+	"a NUL byte in a query argument name must get 403"
+)
+check(
+	request("203.0.113.132", { args = { q = "un\0ion" } }) == 403,
+	"a NUL byte in a query argument value must get 403"
+)
+check(
+	request("203.0.113.133", { args = { q = { "ok", "un\0ion" } } }) == 403,
+	"a NUL byte in a multi-value query argument must get 403"
+)
+check(request("203.0.113.134", { cookie = "a%00b=1" }) == 403, "a %00 NUL byte in a cookie name must get 403")
+check(request("203.0.113.135", { cookie = "q=un%00ion" }) == 403, "a %00 NUL byte in a cookie value must get 403")
+check(
+	request("203.0.113.136", { cookie = "sl-session=abc%00def" }) == 403,
+	"a %00 NUL byte in a skipped cookie must get 403"
+)
+check(body({ ctype = form, body = "q=un%00ion" }) == 403, "a %00 NUL byte in a urlencoded body must get 403")
+check(
+	body({ ctype = "application/json", body = '{"q":"un\\u0000ion"}' }) == 403,
+	"a \\u0000 NUL escape in a JSON body must get 403"
+)
+check(body({ ctype = "text/xml", body = "<a\0/>" }) == 403, "a NUL byte in an XML body must get 403")
+check(
+	body({ ctype = mp, body = part(field_q, "un\0ion") .. "--XyZ--\r\n" }) == 403,
+	"a NUL byte in a multipart text field must get 403"
+)
+check(
+	body({ ctype = "application/octet-stream", body = "bin\0data" }) == 200,
+	"a NUL byte in an unchecked binary Content-Type body must pass"
+)
 
 local function hex(s)
 	return (s:gsub(".", function(c)
@@ -884,6 +1016,37 @@ check(
 check(
 	body({ ctype = mp, body = pdf .. part(field_q, "Teachers' and true friends") .. "--XyZ--\r\n", file = true }) == 200,
 	"real rules: a clean field after a 200 KB upload must pass"
+)
+for _, fn in ipairs({
+	'filename="../../etc/passwd"',
+	'filename="<script>alert(1)</script>"',
+	"filename*=UTF-8''..%2F..%2Fetc%2Fpasswd",
+	'filename="a;cat /etc/passwd"',
+}) do
+	check(body({
+		ctype = mp,
+		body = part('Content-Disposition: form-data; name="f"; ' .. fn, "ok") .. "--XyZ--\r\n",
+	}) == 403, "real rules: malicious upload filename must get 403: " .. fn)
+end
+check(body({
+	ctype = mp,
+	body = part(
+		'Content-Disposition: form-data; name="f"; filename="report (1).pdf"; filename*=UTF-8\'\'report%20%281%29.pdf',
+		"ok"
+	) .. "--XyZ--\r\n",
+}) == 200, "real rules: clean RFC 6266 upload filenames must pass")
+check(
+	request("203.0.113.140", { cookie = "=%27%20or%201%3D1--" }) == 403,
+	"real rules: nameless cookie boolean SQLi must get 403"
+)
+check(request("203.0.113.141", { cookie = "=../../etc/passwd" }) == 403, "real rules: nameless cookie LFI must get 403")
+check(
+	request("203.0.113.142", { cookie = "sl-session=abc, q=../../etc/passwd" }) == 403,
+	"real rules: smuggled LFI inside sl-session cookie must get 403"
+)
+check(
+	request("203.0.113.143", { cookie = "sl-session=5Or3-_./+~==" }) == 200,
+	"real rules: valid opaque sl-session token must pass"
 )
 
 for k in pairs(stats_store) do

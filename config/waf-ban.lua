@@ -7,6 +7,10 @@ local AI_LIMIT = 10
 local AI_WINDOW = 60
 local BODY_LIMIT = 131072
 local BODY_FIELDS = 1000
+local COOKIE_FIELDS = 200
+local MULTIPART_PARTS = 1000
+local MULTIPART_FILES = 100
+local CTYPE_LIMIT = 1024
 local BAN_HISTORY_TTL = 2592000
 
 local phase = ngx.get_phase()
@@ -239,6 +243,9 @@ if not lib then
 	end
 
 	local function extract_boundary(ctype)
+		if #ctype > CTYPE_LIMIT then
+			return nil, "content-type too long"
+		end
 		local at = ctype:find("boundary", 1, true) or ctype:lower():find("boundary", 1, true)
 		local value = at and ctype:sub(at):match("=(.*)")
 		local php = value and (value:sub(1, 1) == '"' and value:match('^"([^"]*)"') or value:match("^[^,;]*"))
@@ -274,34 +281,81 @@ if not lib then
 		if not php or php == "" or php ~= rfc then
 			return nil, "ambiguous boundary"
 		end
+		if #php > 70 or not php:find("^[A-Za-z0-9'()+_,%-./:=? ]+$") then
+			return nil, "invalid boundary"
+		end
 		return php
 	end
 
 	local function part_disposition(head)
+		if head:find("\0", 1, true) then
+			return nil, "null byte in multipart header"
+		end
+		if head:find("\n[ \t]") then
+			return nil, "folded multipart header"
+		end
 		local lower = head:lower()
 		local _, n = lower:gsub("\ncontent%-disposition:", "")
 		if n > 1 then
 			return nil, "duplicate content-disposition"
 		end
-		local cd = lower:match("\ncontent%-disposition:([^\n]*)") or ""
-		local plain, bare, at = cd:gsub("\\.", ""), {}, 1
-		while true do
-			local q = plain:find("[\"']", at)
-			bare[#bare + 1] = plain:sub(at, (q or 0) - 1)
-			local close = q and plain:find(plain:sub(q, q), q + 1, true)
-			if not close then
-				break
+		local cd_start, cd_end = lower:find("\ncontent%-disposition:[^\n]*")
+		local cd = cd_start and head:sub(cd_start + 21, cd_end):gsub("\r$", "") or ""
+		local name, name_n, file_n, file_star_n = "", 0, 0, 0
+		local filenames = {}
+		local pos = (cd:find(";", 1, true) or #cd) + 1
+		while pos <= #cd do
+			local pname, stop = cd:match("^%s*([^=;]*)()", pos)
+			local pval = ""
+			pos = stop
+			if cd:sub(pos, pos) == "=" then
+				local q, quote = cd:match("^%s*()([\"'])", pos + 1)
+				if q then
+					local e = q + 1
+					while e <= #cd and cd:sub(e, e) ~= quote do
+						e = e + (cd:sub(e, e) == "\\" and 2 or 1)
+					end
+					if e > #cd then
+						return nil, "unterminated quote in content-disposition"
+					end
+					pval = cd:sub(q + 1, e - 1):gsub("\\(.)", "%1")
+					pos = e + 1
+				else
+					local raw = cd:match("^[^;]*", pos + 1) or ""
+					pval = trim(raw) or ""
+					pos = pos + 1 + #raw
+				end
 			end
-			at = close + 1
+			pos = (cd:find(";", pos, true) or #cd) + 1
+			pname = trim(pname):lower()
+			if pname == "name" then
+				name_n = name_n + 1
+				if name_n > 1 then
+					return nil, "duplicate name parameter"
+				end
+				name = pval
+			elseif pname == "filename" then
+				file_n = file_n + 1
+				if file_n > 1 then
+					return nil, "duplicate filename parameter"
+				end
+				filenames[#filenames + 1] = pval
+			elseif pname == "filename*" then
+				file_star_n = file_star_n + 1
+				if file_star_n > 1 then
+					return nil, "duplicate filename* parameter"
+				end
+				local ext = pval:match("^[^']*'[^']*'(.*)$") or pval
+				filenames[#filenames + 1] = ngx.unescape_uri(ext)
+			end
 		end
-		local name = cd:match(';[ \t]*name="([^"]*)"') or cd:match(";[ \t]*name=([^;\r]*)") or ""
-		return table.concat(bare):find(";[ \t]*filename%*?=") ~= nil, name
+		return (file_n > 0 or file_star_n > 0), name, filenames
 	end
 
 	local function multipart_fields(read, boundary)
 		local delim = "\n--" .. boundary
 		local buf, pos, eof = "", 1, false
-		local fields, parts, text = {}, 0, 0
+		local fields, parts, files, field_count, text = {}, 0, 0, 0, 0
 		local function more()
 			local chunk = not eof and read()
 			if not chunk then
@@ -347,6 +401,9 @@ if not lib then
 				break
 			end
 			parts = parts + 1
+			if parts > MULTIPART_PARTS then
+				return nil, 413, "over " .. MULTIPART_PARTS .. " multipart parts"
+			end
 			local le, hs, he
 			repeat
 				le = buf:find("\n", pos, true)
@@ -358,9 +415,15 @@ if not lib then
 			if not hs or hs - pos > 65536 or (buf:find(delim, pos, true) or hs) < hs then
 				return nil, 413, "multipart part without a header end"
 			end
-			local is_file, name = part_disposition(buf:sub(le, hs - 1))
+			local is_file, name, filenames = part_disposition(buf:sub(le, hs - 1))
 			if is_file == nil then
 				return nil, ngx.HTTP_FORBIDDEN, name
+			end
+			if is_file then
+				files = files + 1
+				if files > MULTIPART_FILES then
+					return nil, 413, "over " .. MULTIPART_FILES .. " multipart files"
+				end
 			end
 			pos = he + 1
 			local content, over
@@ -368,11 +431,21 @@ if not lib then
 			if over then
 				return nil, 413, "over " .. BODY_LIMIT .. " bytes of multipart fields"
 			end
-			if not is_file then
-				fields[#fields + 1] = { name, content }
-				if #fields > BODY_FIELDS then
+			if is_file then
+				if name ~= "" then
+					fields[#fields + 1] = { "", name }
+				end
+				for _, fn in ipairs(filenames) do
+					if fn ~= "" then
+						fields[#fields + 1] = { "", fn }
+					end
+				end
+			else
+				field_count = field_count + 1
+				if field_count > BODY_FIELDS then
 					return nil, 413, "over " .. BODY_FIELDS .. " fields"
 				end
+				fields[#fields + 1] = { name, content }
 			end
 		end
 		return fields, parts
@@ -517,22 +590,45 @@ if not lib then
 	end
 
 	local function cookie_fields()
-		local fields = {}
+		local fields, count = {}, 0
 		for pair in (ngx.var.http_cookie or ""):gmatch("[^;]+") do
-			local name, value = pair:match("^([^=]*)=?(.*)$")
+			count = count + 1
+			if count > COOKIE_FIELDS then
+				return nil, "over " .. COOKIE_FIELDS .. " cookies", "protocol"
+			end
+			local name, _, value = pair:match("^([^=]*)(=?)(.*)$")
 			name = name:match("^%s*(.-)%s*$")
-			if name ~= "" and not skipped(name) then
+			if name ~= "" then
 				local dname = ngx.unescape_uri(name)
-				fields[#fields + 1] = { dname, dname }
-				if value ~= "" then
-					fields[#fields + 1] = { dname, ngx.unescape_uri(value) }
+				if dname:find("\0", 1, true) then
+					return nil, "null byte", "protocol"
 				end
+				if not skipped(name) or (value ~= "" and not value:find("^[A-Za-z0-9+/=_%.%-~]+$")) then
+					fields[#fields + 1] = { dname, dname }
+					if value ~= "" then
+						local dval = ngx.unescape_uri(value)
+						if dval:find("\0", 1, true) then
+							return nil, "null byte", "protocol"
+						end
+						fields[#fields + 1] = { dname, dval }
+					end
+				end
+			elseif value ~= "" then
+				local dval = ngx.unescape_uri(value)
+				if dval:find("\0", 1, true) then
+					return nil, "null byte", "protocol"
+				end
+				fields[#fields + 1] = { "", dval }
 			end
 		end
 		return fields
 	end
 
-	local function body_hit(uri)
+	local function body_hit(uri, headers)
+		local raw_ct = headers and (headers["content-type"] or headers["Content-Type"])
+		if type(raw_ct) == "table" then
+			return ngx.HTTP_FORBIDDEN, "duplicate content-type", "protocol"
+		end
 		local ctype = ngx.var.content_type or ""
 		local lower = ctype:lower()
 		local subtype = lower:match("^%s*[^/;%s]+/([^;%s]*)") or ""
@@ -606,6 +702,9 @@ if not lib then
 				end
 			end
 			if kind == "xml" then
+				if body:find("\0", 1, true) then
+					return ngx.HTTP_FORBIDDEN, "null byte", "protocol"
+				end
 				local hit, _, err = ngx.re.find(body, XML_RULE, "jo")
 				if hit or err then
 					return ngx.HTTP_FORBIDDEN, "XML rule" .. (err and ", " .. err or ""), "xxe"
@@ -622,11 +721,18 @@ if not lib then
 				fields = json_fields(body) or { { "", json_text(body) } }
 			end
 		end
-		if #fields > BODY_FIELDS then
+		if kind ~= "multipart" and #fields > BODY_FIELDS then
 			return 413, "over " .. BODY_FIELDS .. " fields"
 		end
 		for k = 1, #fields do
-			fields[#fields + 1] = { fields[k][1], fields[k][1] }
+			if fields[k][1]:find("\0", 1, true) or fields[k][2]:find("\0", 1, true) then
+				return ngx.HTTP_FORBIDDEN, "null byte", "protocol"
+			end
+		end
+		for k = 1, #fields do
+			if fields[k][1] ~= "" then
+				fields[#fields + 1] = { fields[k][1], fields[k][1] }
+			end
 		end
 		local reason, cat = rule_hit(fields)
 		if reason then
@@ -659,12 +765,18 @@ if phase == "rewrite" then
 		ngx.req.clear_header("CF-Connecting-IP")
 	end
 	local args, args_err = ngx.req.get_uri_args()
-	local _, headers_err = ngx.req.get_headers()
+	local headers, headers_err = ngx.req.get_headers()
 	if args_err == "truncated" or headers_err == "truncated" then
 		return ngx.exit(ngx.HTTP_FORBIDDEN)
 	end
 	ngx.ctx.waf_ban_checked = true
 	local uri = ngx.var.uri
+	if uri:find("\0", 1, true) then
+		lib.log_hit("URI", true, "null byte")
+		ngx.ctx.waf_recorded = true
+		lib.record_hit("protocol")
+		return ngx.exit(ngx.HTTP_FORBIDDEN)
+	end
 	local url = ngx.var.scheme .. "://" .. ngx.var.host .. ngx.var.request_uri
 	for i, rule in ipairs(lib.compiled("WAF_URI_Request_table", "(?i)", "")) do
 		local hit, _, err = rule[1]
@@ -699,7 +811,28 @@ if phase == "rewrite" then
 		return ngx.exit(ngx.HTTP_TOO_MANY_REQUESTS)
 	end
 	local names = {}
-	for name in pairs(args) do
+	for name, values in pairs(args) do
+		if name:find("\0", 1, true) then
+			lib.log_hit("argument name", true, "null byte")
+			ngx.ctx.waf_recorded = true
+			lib.record_hit("protocol")
+			return ngx.exit(ngx.HTTP_FORBIDDEN)
+		end
+		if type(values) == "table" then
+			for _, v in ipairs(values) do
+				if type(v) == "string" and v:find("\0", 1, true) then
+					lib.log_hit("argument value", true, "null byte")
+					ngx.ctx.waf_recorded = true
+					lib.record_hit("protocol")
+					return ngx.exit(ngx.HTTP_FORBIDDEN)
+				end
+			end
+		elseif type(values) == "string" and values:find("\0", 1, true) then
+			lib.log_hit("argument value", true, "null byte")
+			ngx.ctx.waf_recorded = true
+			lib.record_hit("protocol")
+			return ngx.exit(ngx.HTTP_FORBIDDEN)
+		end
 		names[#names + 1] = { name, name }
 	end
 	local reason, cat = lib.rule_hit(names)
@@ -709,7 +842,12 @@ if phase == "rewrite" then
 		lib.record_hit(cat)
 		return ngx.exit(ngx.HTTP_FORBIDDEN)
 	end
-	reason, cat = lib.rule_hit(lib.cookie_fields())
+	local cfields, creason, ccat = lib.cookie_fields()
+	if not cfields then
+		reason, cat = creason, ccat
+	else
+		reason, cat = lib.rule_hit(cfields)
+	end
 	if reason then
 		lib.log_hit("cookie", localized_global.WAF_cookie_block, reason)
 		if localized_global.WAF_cookie_block then
@@ -719,7 +857,7 @@ if phase == "rewrite" then
 		end
 	end
 	local status
-	status, reason, cat = lib.body_hit(uri)
+	status, reason, cat = lib.body_hit(uri, headers)
 	if status then
 		lib.log_hit("body", localized_global.WAF_body_block, reason)
 		if localized_global.WAF_body_block then
