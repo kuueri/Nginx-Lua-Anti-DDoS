@@ -1,6 +1,6 @@
 # Nginx WAF
 
-This repository is a cybersecurity defense fork of [Nginx-Lua-Anti-DDoS](https://github.com/C0nw0nk/Nginx-Lua-Anti-DDoS) by Conor McKnight ([C0nw0nk](https://github.com/C0nw0nk)).
+This repository is a cyber defense fork of [Nginx-Lua-Anti-DDoS](https://github.com/C0nw0nk/Nginx-Lua-Anti-DDoS) by Conor McKnight ([C0nw0nk](https://github.com/C0nw0nk)).
 It adds deployment scripts for `deb` and `rpm` Linux systems, local WAF rules, and exponential in-memory IP banning.
 For upstream details, read the [upstream README](https://github.com/C0nw0nk/Nginx-Lua-Anti-DDoS#readme).
 
